@@ -643,6 +643,7 @@
 
   function verdictFor(error) {
     if (error <= 2) return { text: "🎯 Nailed it!", cls: "great" };
+    if (error <= 5) return { text: "👍 Not bad", cls: "good" };
     if (error <= 10) return { text: "😐 Eh", cls: "meh" };
     if (error <= 20) return { text: "😬 Rough", cls: "meh" };
     return { text: "💸 Yikes", cls: "bad" };
