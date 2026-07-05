@@ -141,7 +141,16 @@
     margin: 10px 0 30px;
   }
   .odds-display .label { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .odds-box {
+    display: inline-block;
+    padding: 14px 30px 12px;
+    border-radius: 18px;
+    border: 2px solid transparent;
+  }
+  .odds-box.pos { background: rgba(79,157,255,0.10); border-color: rgba(79,157,255,0.5); }
+  .odds-box.neg { background: rgba(34,211,165,0.10); border-color: rgba(34,211,165,0.5); }
   .odds-display .value {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
     font-size: 64px;
     font-weight: 800;
     letter-spacing: -1px;
@@ -314,7 +323,9 @@
 
     <div class="odds-display">
       <div class="label">Implied win probability of...</div>
-      <div class="value" id="oddsValue">+150</div>
+      <div class="odds-box" id="oddsBox">
+        <div class="value" id="oddsValue">+150</div>
+      </div>
     </div>
 
     <div class="guess-readout"><span id="guessValue">50</span>%</div>
@@ -558,6 +569,7 @@
 
   // ---------- Question flow ----------
   var oddsValueEl = document.getElementById("oddsValue");
+  var oddsBoxEl = document.getElementById("oddsBox");
   var qProgressEl = document.getElementById("qProgress");
   var streakBadgeEl = document.getElementById("streakBadge");
 
@@ -565,8 +577,10 @@
     game.locked = false;
     setGuess(50);
     var odds = game.odds[game.index];
+    var signCls = odds > 0 ? "pos" : "neg";
     oddsValueEl.textContent = formatOdds(odds);
-    oddsValueEl.className = "value " + (odds > 0 ? "pos" : "neg");
+    oddsValueEl.className = "value " + signCls;
+    oddsBoxEl.className = "odds-box " + signCls;
     qProgressEl.textContent = "Question " + (game.index + 1) + "/" + TOTAL_QUESTIONS;
     streakBadgeEl.textContent = game.streak > 1 ? ("🔥 " + game.streak + " streak") : "";
     startTimer();
