@@ -361,9 +361,13 @@
   // ---------- Config ----------
   var TOTAL_QUESTIONS = 10;
   var TIME_PER_Q = 8.0; // seconds — short on purpose, this is what forces gut instinct over math
-  var MAX_ACCURACY_PTS = 100;
-  var MAX_SPEED_PTS = 10; // speed matters, but accuracy is weighted far more heavily
-  var MAX_POINTS_PER_Q = (MAX_ACCURACY_PTS + MAX_SPEED_PTS) * 2; // times up to 2x streak multiplier
+  var SPEED_GRACE_SECONDS = 3; // no speed penalty at all if you answer within this window
+  var STREAK_ERROR_THRESHOLD = 5; // % error under which a question counts as "not missed"
+
+  var MAX_ACCURACY_PTS = 70;
+  var MAX_SPEED_PTS = 20;
+  var STREAK_BONUS_PTS = 10; // flat bonus, not a multiplier — keeps one bad guess from tanking a whole run
+  var MAX_POINTS_PER_Q = MAX_ACCURACY_PTS + MAX_SPEED_PTS + STREAK_BONUS_PTS; // 100, nice round number
   var MAX_POSSIBLE = TOTAL_QUESTIONS * MAX_POINTS_PER_Q;
 
   // Realistic American odds magnitudes (sportsbooks rarely use arbitrary numbers).
@@ -588,18 +592,20 @@
     var actual = oddsToProb(odds);
     var guess = game.currentGuess;
     var error = Math.abs(guess - actual);
-    var timeLeftFrac = isTimeout ? 0 : Math.max(0, (game.deadline - performance.now()) / (TIME_PER_Q * 1000));
+    var remainingSeconds = isTimeout ? 0 : Math.max(0, (game.deadline - performance.now()) / 1000);
 
     // Error is the main driver of score: 0 pts once you're 20%+ off.
-    var accuracyPts = Math.max(0, Math.round(MAX_ACCURACY_PTS - error * 5));
-    // Speed is a smaller factor, and the sqrt curve keeps the penalty gentle
-    // unless you're using nearly all your time.
-    var speedBonus = accuracyPts > 0 ? Math.round(MAX_SPEED_PTS * Math.sqrt(timeLeftFrac)) : 0;
-    var streakMultiplier = Math.min(2, 1 + game.streak * 0.1);
-    var points = Math.round((accuracyPts + speedBonus) * streakMultiplier);
+    var accuracyPts = Math.max(0, Math.round(MAX_ACCURACY_PTS - error * (MAX_ACCURACY_PTS / 20)));
+    // No penalty for the first SPEED_GRACE_SECONDS; after that it decays linearly to 0 at the timeout.
+    var decayWindow = TIME_PER_Q - SPEED_GRACE_SECONDS;
+    var speedFrac = Math.min(1, remainingSeconds / decayWindow);
+    var speedBonus = accuracyPts > 0 ? Math.round(MAX_SPEED_PTS * speedFrac) : 0;
+    // Flat bonus (not a multiplier) so a hot streak can't dwarf accuracy — it just keeps adding up.
+    var streakBonus = error <= STREAK_ERROR_THRESHOLD ? STREAK_BONUS_PTS : 0;
+    var points = accuracyPts + speedBonus + streakBonus;
 
-    // Update streak: a "good" answer (error <= 10) keeps the streak alive and growing.
-    if (error <= 10) {
+    // Streak is still tracked (and shown) even though it no longer multiplies score.
+    if (error <= STREAK_ERROR_THRESHOLD) {
       game.streak++;
       game.bestStreakThisGame = Math.max(game.bestStreakThisGame, game.streak);
     } else {
@@ -613,7 +619,7 @@
     game.results.push({
       odds: odds, actual: actual, guess: guess, error: error,
       points: points, accuracyPts: accuracyPts, speedBonus: speedBonus,
-      multiplier: streakMultiplier, timeout: isTimeout
+      streakBonus: streakBonus, timeout: isTimeout
     });
 
     if (isTimeout) {
@@ -646,7 +652,7 @@
     fbCompare.innerHTML = "You said <b>" + r.guess + "%</b> — actual was <b>" + r.actual.toFixed(1) + "%</b>";
     fbPoints.textContent = "+" + r.points;
     fbBreakdown.textContent = "accuracy " + r.accuracyPts + " · speed +" + r.speedBonus +
-      " · streak x" + r.multiplier.toFixed(1);
+      " · streak +" + r.streakBonus;
 
     advanceTimeout = setTimeout(advance, 1500);
   }
