@@ -678,10 +678,13 @@
 
   // ---------- Grading ----------
   function gradeFor(scorePct) {
-    if (scorePct >= 85) return { title: "Market Maker", emoji: "🏦" };
-    if (scorePct >= 70) return { title: "Sharp", emoji: "🦈" };
-    if (scorePct >= 50) return { title: "+EV Bettor", emoji: "📈" };
-    if (scorePct >= 30) return { title: "Square", emoji: "🎯" };
+    if (scorePct >= 100) return { title: "Oracle", emoji: "🔮" };
+    if (scorePct >= 95) return { title: "The Book", emoji: "🎩" };
+    if (scorePct >= 90) return { title: "Market Maker", emoji: "🏦" };
+    if (scorePct >= 80) return { title: "Sharp", emoji: "🦈" };
+    if (scorePct >= 70) return { title: "+EV Bettor", emoji: "📈" };
+    if (scorePct >= 50) return { title: "Rec", emoji: "🎰" };
+    if (scorePct >= 30) return { title: "Square", emoji: "💔" };
     return { title: "Exit Liquidity", emoji: "💸" };
   }
 
@@ -700,12 +703,12 @@
     document.getElementById("endScore").textContent = game.totalScore + " / " + MAX_POSSIBLE + " points (" + scorePct.toFixed(0) + "%)";
     document.getElementById("endNewBest").classList.toggle("hidden", !isNewHigh);
 
-    var rows = "<tr><th>#</th><th>Odds</th><th>You</th><th>Actual</th><th>Off by</th><th>Speed</th><th>Points</th></tr>";
-    game.results.forEach(function (r, i) {
-      rows += "<tr><td>" + (i + 1) + "</td><td class='mono'>" + formatOdds(r.odds) + "</td><td>" + r.guess + "%</td><td>" +
+    var rows = "<tr><th>Odds</th><th>You</th><th>Actual</th><th>Off by</th><th>Speed</th><th>Points</th></tr>";
+    game.results.forEach(function (r) {
+      rows += "<tr><td class='mono'>" + formatOdds(r.odds) + "</td><td>" + r.guess + "%</td><td>" +
         r.actual.toFixed(1) + "%</td><td>" + r.error.toFixed(1) + "%</td><td>+" + r.speedBonus + "</td><td class='pts'>" + r.points + "</td></tr>";
     });
-    rows += "<tr class='total'><td colspan='6' style='text-align:right;'>Total</td><td class='pts'>" + game.totalScore + "</td></tr>";
+    rows += "<tr class='total'><td colspan='5' style='text-align:right;'>Total</td><td class='pts'>" + game.totalScore + "</td></tr>";
     document.getElementById("summaryTable").innerHTML = rows;
 
     showScreen("end");
