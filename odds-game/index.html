@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Odds Instinct</title>
+<style>
+  :root {
+    --bg: #0a0e14;
+    --card: #121824;
+    --card-border: #1f2937;
+    --text: #e8edf4;
+    --muted: #8b96a8;
+    --accent: #22d3a5;
+    --accent-dim: #17614f;
+    --amber: #f5b942;
+    --red: #ef4444;
+    --blue: #4f9dff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: radial-gradient(circle at top, #101826 0%, var(--bg) 60%);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+  .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
+
+  .card {
+    width: 100%;
+    max-width: 460px;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 20px;
+    padding: 28px 24px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    position: relative;
+    overflow: hidden;
+  }
+
+  h1 {
+    font-size: 26px;
+    margin: 0 0 4px;
+    letter-spacing: -0.5px;
+  }
+  .subtitle { color: var(--muted); font-size: 14px; margin-bottom: 22px; }
+
+  .stats-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 22px;
+    flex-wrap: wrap;
+  }
+  .stat-pill {
+    flex: 1;
+    min-width: 90px;
+    background: #0e1420;
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 10px 12px;
+    text-align: center;
+  }
+  .stat-pill .val { font-size: 18px; font-weight: 700; color: var(--accent); }
+  .stat-pill .lbl { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+  details.howto {
+    margin-bottom: 22px;
+    background: #0e1420;
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 10px 14px;
+  }
+  details.howto summary { cursor: pointer; color: var(--blue); font-size: 14px; font-weight: 600; }
+  details.howto p { font-size: 13px; color: var(--muted); line-height: 1.5; }
+  details.howto code { color: var(--text); background: #1a2232; padding: 1px 5px; border-radius: 4px; }
+
+  button.primary {
+    width: 100%;
+    padding: 16px;
+    border: none;
+    border-radius: 14px;
+    background: var(--accent);
+    color: #06251d;
+    font-size: 17px;
+    font-weight: 800;
+    cursor: pointer;
+    transition: transform 0.08s ease, box-shadow 0.2s ease;
+    box-shadow: 0 8px 24px rgba(34,211,165,0.25);
+  }
+  button.primary:active { transform: scale(0.97); }
+  button.secondary {
+    width: 100%;
+    padding: 13px;
+    margin-top: 10px;
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    background: transparent;
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* --- Question screen --- */
+  .progress-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .streak-badge {
+    color: var(--amber);
+    font-weight: 700;
+  }
+
+  .timer-track {
+    height: 8px;
+    border-radius: 8px;
+    background: #1a2232;
+    overflow: hidden;
+    margin-bottom: 26px;
+  }
+  .timer-fill {
+    height: 100%;
+    width: 100%;
+    background: var(--accent);
+    border-radius: 8px;
+  }
+  .timer-fill.warn { background: var(--amber); }
+  .timer-fill.danger { background: var(--red); }
+
+  .odds-display {
+    text-align: center;
+    margin: 10px 0 30px;
+  }
+  .odds-display .label { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .odds-display .value {
+    font-size: 64px;
+    font-weight: 800;
+    letter-spacing: -1px;
+  }
+  .odds-display .value.pos { color: var(--blue); }
+  .odds-display .value.neg { color: var(--accent); }
+
+  .guess-readout {
+    text-align: center;
+    font-size: 46px;
+    font-weight: 800;
+    margin-bottom: 14px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .slider-track {
+    position: relative;
+    height: 46px;
+    background: #0e1420;
+    border: 1px solid var(--card-border);
+    border-radius: 23px;
+    margin-bottom: 22px;
+    touch-action: none;
+    cursor: pointer;
+  }
+  .slider-fill {
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 50%;
+    background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+    border-radius: 23px;
+    pointer-events: none;
+  }
+  .slider-thumb {
+    position: absolute;
+    top: 3px;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: #fff;
+    left: calc(50% - 20px);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    pointer-events: none;
+  }
+
+  button.lockin {
+    width: 100%;
+    padding: 16px;
+    border: none;
+    border-radius: 14px;
+    background: var(--text);
+    color: #0a0e14;
+    font-size: 16px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+  button.lockin:active { transform: scale(0.98); }
+
+  /* --- Feedback overlay --- */
+  .feedback {
+    text-align: center;
+  }
+  .feedback .verdict { font-size: 22px; font-weight: 800; margin-bottom: 10px; }
+  .feedback .verdict.great { color: var(--accent); }
+  .feedback .verdict.good { color: var(--blue); }
+  .feedback .verdict.meh { color: var(--amber); }
+  .feedback .verdict.bad { color: var(--red); }
+  .feedback .compare { font-size: 15px; color: var(--muted); margin-bottom: 16px; }
+  .feedback .compare b { color: var(--text); }
+  .feedback .points {
+    font-size: 40px;
+    font-weight: 800;
+    margin-bottom: 6px;
+  }
+  .feedback .breakdown { font-size: 12px; color: var(--muted); margin-bottom: 20px; }
+
+  /* --- Summary screen --- */
+  .grade-banner {
+    text-align: center;
+    padding: 20px 10px;
+    border-radius: 16px;
+    background: #0e1420;
+    border: 1px solid var(--card-border);
+    margin-bottom: 18px;
+  }
+  .grade-banner .emoji { font-size: 40px; }
+  .grade-banner .title { font-size: 22px; font-weight: 800; margin: 4px 0; }
+  .grade-banner .score { font-size: 15px; color: var(--muted); }
+  .grade-banner .newbest {
+    display: inline-block;
+    margin-top: 8px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #06251d;
+    background: var(--amber);
+    padding: 4px 10px;
+    border-radius: 999px;
+  }
+
+  table.summary {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    margin-bottom: 18px;
+  }
+  table.summary th, table.summary td {
+    padding: 6px 4px;
+    text-align: center;
+    border-bottom: 1px solid var(--card-border);
+  }
+  table.summary th { color: var(--muted); font-weight: 600; font-size: 11px; }
+
+  canvas#confetti {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  .hidden { display: none !important; }
+
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-8px); }
+    40% { transform: translateX(8px); }
+    60% { transform: translateX(-5px); }
+    80% { transform: translateX(5px); }
+  }
+  .shake { animation: shake 0.35s ease; }
+</style>
+</head>
+<body>
+
+<canvas id="confetti" class="hidden"></canvas>
+
+<div class="card" id="card">
+
+  <!-- START SCREEN -->
+  <div id="screen-start">
+    <h1>Odds Instinct 🎯</h1>
+    <div class="subtitle">10 American odds. 5 seconds each. No calculator allowed.</div>
+
+    <div class="stats-row" id="statsRow"></div>
+
+    <details class="howto">
+      <summary>How American odds work</summary>
+      <p>
+        <b>Positive odds</b> (like <code>+150</code>) show profit on a $100 bet.
+        Implied probability = <code>100 / (odds + 100)</code>.<br><br>
+        <b>Negative odds</b> (like <code>-150</code>) show what you'd need to bet to win $100.
+        Implied probability = <code>|odds| / (|odds| + 100)</code>.<br><br>
+        Bigger negative number = bigger favorite. Bigger positive number = bigger underdog.
+        You won't have time to do this math — the game is here to build the gut feel instead.
+      </p>
+    </details>
+
+    <button class="primary" id="btnStart">Start Game</button>
+  </div>
+
+  <!-- QUESTION SCREEN -->
+  <div id="screen-question" class="hidden">
+    <div class="progress-row">
+      <span id="qProgress">Question 1/10</span>
+      <span class="streak-badge" id="streakBadge"></span>
+    </div>
+    <div class="timer-track"><div class="timer-fill" id="timerFill"></div></div>
+
+    <div class="odds-display">
+      <div class="label">Implied win probability of...</div>
+      <div class="value" id="oddsValue">+150</div>
+    </div>
+
+    <div class="guess-readout"><span id="guessValue">50</span>%</div>
+
+    <div class="slider-track" id="sliderTrack" tabindex="0" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
+      <div class="slider-fill" id="sliderFill"></div>
+      <div class="slider-thumb" id="sliderThumb"></div>
+    </div>
+
+    <button class="lockin" id="btnLockIn">Lock In</button>
+  </div>
+
+  <!-- FEEDBACK SCREEN -->
+  <div id="screen-feedback" class="hidden">
+    <div class="feedback">
+      <div class="verdict" id="fbVerdict">🎯 Nailed it!</div>
+      <div class="compare" id="fbCompare">You said <b>62%</b> — actual was <b>58%</b></div>
+      <div class="points" id="fbPoints">+142</div>
+      <div class="breakdown" id="fbBreakdown">accuracy 100 &middot; speed +12 &middot; streak x1.3</div>
+    </div>
+  </div>
+
+  <!-- END SCREEN -->
+  <div id="screen-end" class="hidden">
+    <div class="grade-banner">
+      <div class="emoji" id="endEmoji">🏦</div>
+      <div class="title" id="endTitle">Market Maker</div>
+      <div class="score" id="endScore">1820 / 2400 points</div>
+      <div id="endNewBest" class="hidden"><span class="newbest">NEW HIGH SCORE</span></div>
+    </div>
+
+    <table class="summary" id="summaryTable"></table>
+
+    <button class="primary" id="btnAgain">Play Again</button>
+    <button class="secondary" id="btnCopy">Copy Result</button>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------- Config ----------
+  var TOTAL_QUESTIONS = 10;
+  var TIME_PER_Q = 5.0; // seconds — short on purpose, this is what forces gut instinct over math
+  var MAX_POINTS_PER_Q = 240; // 100 accuracy + 20 speed, times up to 2x streak multiplier
+  var MAX_POSSIBLE = TOTAL_QUESTIONS * MAX_POINTS_PER_Q;
+
+  // Realistic American odds magnitudes (sportsbooks rarely use arbitrary numbers).
+  var MAGS = [100,105,110,115,120,125,130,135,140,145,150,160,170,175,180,190,
+              200,210,220,225,240,250,260,275,300,325,350,375,400,425,450,475,
+              500,550,600,650,700,750,800,850,900,950,1000,1100,1200,1300,1400,
+              1500,1750,2000,2500,3000,4000,5000,7500,10000];
+
+  var STORAGE_KEY = "oddsInstinctStats";
+
+  // ---------- Odds math ----------
+  // Converts American odds to the implied win probability they represent.
+  function oddsToProb(odds) {
+    if (odds > 0) return 100 / (odds + 100) * 100;
+    return (-odds) / ((-odds) + 100) * 100;
+  }
+
+  function formatOdds(odds) {
+    return (odds > 0 ? "+" : "") + odds;
+  }
+
+  // Bias toward smaller/common magnitudes by taking the min of two random picks,
+  // while still occasionally throwing a big long-shot number in for variety.
+  function pickMagnitude() {
+    var i1 = Math.floor(Math.random() * MAGS.length);
+    var i2 = Math.floor(Math.random() * MAGS.length);
+    return MAGS[Math.min(i1, i2)];
+  }
+
+  function generateOddsSet(n) {
+    var used = {};
+    var out = [];
+    while (out.length < n) {
+      var mag = pickMagnitude();
+      var sign = Math.random() < 0.5 ? 1 : -1;
+      var odds = sign * mag;
+      if (used[odds]) continue;
+      used[odds] = true;
+      out.push(odds);
+    }
+    return out;
+  }
+
+  // ---------- Persisted stats ----------
+  function loadStats() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) throw new Error("none");
+      return JSON.parse(raw);
+    } catch (e) {
+      return { highScore: 0, gamesPlayed: 0, bestStreakEver: 0, totalErrorSum: 0, totalQuestions: 0 };
+    }
+  }
+  function saveStats(s) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+  }
+  var stats = loadStats();
+
+  function renderStatsRow() {
+    var avgError = stats.totalQuestions > 0 ? (stats.totalErrorSum / stats.totalQuestions) : null;
+    var el = document.getElementById("statsRow");
+    el.innerHTML = "" +
+      pill(stats.highScore, "Best score") +
+      pill(stats.gamesPlayed, "Games played") +
+      pill(avgError === null ? "—" : avgError.toFixed(1) + "%", "Avg error") +
+      pill(stats.bestStreakEver, "Best streak");
+  }
+  function pill(val, lbl) {
+    return '<div class="stat-pill"><div class="val">' + val + '</div><div class="lbl">' + lbl + '</div></div>';
+  }
+  renderStatsRow();
+
+  // ---------- Screens ----------
+  var screens = {
+    start: document.getElementById("screen-start"),
+    question: document.getElementById("screen-question"),
+    feedback: document.getElementById("screen-feedback"),
+    end: document.getElementById("screen-end")
+  };
+  function showScreen(name) {
+    for (var k in screens) screens[k].classList.toggle("hidden", k !== name);
+  }
+
+  // ---------- Game state ----------
+  var game = null;
+
+  function newGame() {
+    game = {
+      odds: generateOddsSet(TOTAL_QUESTIONS),
+      index: 0,
+      results: [],
+      streak: 0,
+      bestStreakThisGame: 0,
+      totalScore: 0,
+      currentGuess: 50,
+      locked: false,
+      deadline: 0,
+      remainingAtPause: null,
+      rafId: null
+    };
+  }
+
+  document.getElementById("btnStart").addEventListener("click", function () {
+    newGame();
+    showScreen("question");
+    showQuestion();
+  });
+  document.getElementById("btnAgain").addEventListener("click", function () {
+    newGame();
+    showScreen("question");
+    showQuestion();
+  });
+
+  // ---------- Slider ----------
+  var sliderTrack = document.getElementById("sliderTrack");
+  var sliderFill = document.getElementById("sliderFill");
+  var sliderThumb = document.getElementById("sliderThumb");
+  var guessValueEl = document.getElementById("guessValue");
+  var dragging = false;
+
+  function setGuess(pct) {
+    pct = Math.max(0, Math.min(100, Math.round(pct)));
+    game.currentGuess = pct;
+    guessValueEl.textContent = pct;
+    sliderFill.style.width = pct + "%";
+    sliderThumb.style.left = "calc(" + pct + "% - 20px)";
+    sliderTrack.setAttribute("aria-valuenow", pct);
+  }
+
+  function pctFromClientX(clientX) {
+    var rect = sliderTrack.getBoundingClientRect();
+    return (clientX - rect.left) / rect.width * 100;
+  }
+
+  sliderTrack.addEventListener("pointerdown", function (e) {
+    if (game.locked) return;
+    dragging = true;
+    sliderTrack.setPointerCapture(e.pointerId);
+    setGuess(pctFromClientX(e.clientX));
+  });
+  sliderTrack.addEventListener("pointermove", function (e) {
+    if (!dragging || game.locked) return;
+    setGuess(pctFromClientX(e.clientX));
+  });
+  window.addEventListener("pointerup", function () { dragging = false; });
+
+  sliderTrack.addEventListener("keydown", function (e) {
+    if (game.locked) return;
+    var step = e.shiftKey ? 5 : 1;
+    if (e.key === "ArrowRight" || e.key === "ArrowUp") { setGuess(game.currentGuess + step); e.preventDefault(); }
+    if (e.key === "ArrowLeft" || e.key === "ArrowDown") { setGuess(game.currentGuess - step); e.preventDefault(); }
+  });
+
+  // ---------- Timer ----------
+  var timerFill = document.getElementById("timerFill");
+
+  function startTimer() {
+    game.deadline = performance.now() + TIME_PER_Q * 1000;
+    tick();
+  }
+  function tick() {
+    var now = performance.now();
+    var remainingMs = game.deadline - now;
+    var frac = Math.max(0, remainingMs / (TIME_PER_Q * 1000));
+    timerFill.style.width = (frac * 100) + "%";
+    timerFill.className = "timer-fill" + (frac < 0.3 ? " danger" : frac < 0.6 ? " warn" : "");
+    if (remainingMs <= 0) {
+      lockInAnswer(true);
+      return;
+    }
+    game.rafId = requestAnimationFrame(tick);
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (!game || game.locked) return;
+    if (document.hidden) {
+      game.remainingAtPause = game.deadline - performance.now();
+      if (game.rafId) cancelAnimationFrame(game.rafId);
+    } else if (game.remainingAtPause != null) {
+      game.deadline = performance.now() + game.remainingAtPause;
+      game.remainingAtPause = null;
+      tick();
+    }
+  });
+
+  // ---------- Question flow ----------
+  var oddsValueEl = document.getElementById("oddsValue");
+  var qProgressEl = document.getElementById("qProgress");
+  var streakBadgeEl = document.getElementById("streakBadge");
+
+  function showQuestion() {
+    game.locked = false;
+    setGuess(50);
+    var odds = game.odds[game.index];
+    oddsValueEl.textContent = formatOdds(odds);
+    oddsValueEl.className = "value " + (odds > 0 ? "pos" : "neg");
+    qProgressEl.textContent = "Question " + (game.index + 1) + "/" + TOTAL_QUESTIONS;
+    streakBadgeEl.textContent = game.streak > 1 ? ("🔥 " + game.streak + " streak") : "";
+    startTimer();
+  }
+
+  document.getElementById("btnLockIn").addEventListener("click", function () {
+    lockInAnswer(false);
+  });
+  document.addEventListener("keydown", function (e) {
+    if (screens.question.classList.contains("hidden")) return;
+    if ((e.key === "Enter" || e.key === " ") && !game.locked) {
+      lockInAnswer(false);
+      e.preventDefault();
+    }
+  });
+
+  function lockInAnswer(isTimeout) {
+    if (game.locked) return;
+    game.locked = true;
+    if (game.rafId) cancelAnimationFrame(game.rafId);
+
+    var odds = game.odds[game.index];
+    var actual = oddsToProb(odds);
+    var guess = game.currentGuess;
+    var error = Math.abs(guess - actual);
+    var timeLeftFrac = isTimeout ? 0 : Math.max(0, (game.deadline - performance.now()) / (TIME_PER_Q * 1000));
+
+    var accuracyPts = Math.max(0, Math.round(100 - error * 3));
+    var speedBonus = accuracyPts > 0 ? Math.round(20 * timeLeftFrac) : 0;
+    var streakMultiplier = Math.min(2, 1 + game.streak * 0.1);
+    var points = Math.round((accuracyPts + speedBonus) * streakMultiplier);
+
+    // Update streak: a "good" answer (error <= 10) keeps the streak alive and growing.
+    if (error <= 10) {
+      game.streak++;
+      game.bestStreakThisGame = Math.max(game.bestStreakThisGame, game.streak);
+    } else {
+      game.streak = 0;
+    }
+
+    game.totalScore += points;
+    stats.totalErrorSum += error;
+    stats.totalQuestions += 1;
+
+    game.results.push({
+      odds: odds, actual: actual, guess: guess, error: error,
+      points: points, accuracyPts: accuracyPts, speedBonus: speedBonus,
+      multiplier: streakMultiplier, timeout: isTimeout
+    });
+
+    if (isTimeout) {
+      document.getElementById("card").classList.add("shake");
+      setTimeout(function () { document.getElementById("card").classList.remove("shake"); }, 350);
+    }
+
+    showFeedback(game.results[game.results.length - 1]);
+  }
+
+  // ---------- Feedback ----------
+  var fbVerdict = document.getElementById("fbVerdict");
+  var fbCompare = document.getElementById("fbCompare");
+  var fbPoints = document.getElementById("fbPoints");
+  var fbBreakdown = document.getElementById("fbBreakdown");
+  var advanceTimeout = null;
+
+  function verdictFor(error) {
+    if (error <= 3) return { text: "🎯 Nailed it!", cls: "great" };
+    if (error <= 7) return { text: "🔥 Sharp read", cls: "great" };
+    if (error <= 15) return { text: "👍 Close enough", cls: "good" };
+    if (error <= 25) return { text: "😬 Rough", cls: "meh" };
+    return { text: "💸 Yikes", cls: "bad" };
+  }
+
+  function showFeedback(r) {
+    showScreen("feedback");
+    var v = verdictFor(r.error);
+    fbVerdict.textContent = r.timeout ? "⏱️ Too slow!" : v.text;
+    fbVerdict.className = "verdict " + v.cls;
+    fbCompare.innerHTML = "You said <b>" + r.guess + "%</b> — actual was <b>" + r.actual.toFixed(1) + "%</b>";
+    fbPoints.textContent = "+" + r.points;
+    fbBreakdown.textContent = "accuracy " + r.accuracyPts + " · speed +" + r.speedBonus +
+      " · streak x" + r.multiplier.toFixed(1);
+
+    advanceTimeout = setTimeout(advance, 1500);
+  }
+  screens.feedback.addEventListener("click", function () {
+    if (advanceTimeout) { clearTimeout(advanceTimeout); advanceTimeout = null; }
+    advance();
+  });
+
+  function advance() {
+    game.index++;
+    if (game.index >= TOTAL_QUESTIONS) {
+      endGame();
+    } else {
+      showScreen("question");
+      showQuestion();
+    }
+  }
+
+  // ---------- Grading ----------
+  function gradeFor(scorePct) {
+    if (scorePct >= 85) return { title: "Market Maker", emoji: "🏦" };
+    if (scorePct >= 70) return { title: "Sharp", emoji: "🦈" };
+    if (scorePct >= 50) return { title: "+EV Bettor", emoji: "📈" };
+    if (scorePct >= 30) return { title: "Square", emoji: "🎯" };
+    return { title: "Exit Liquidity", emoji: "💸" };
+  }
+
+  function endGame() {
+    stats.gamesPlayed++;
+    var isNewHigh = game.totalScore > stats.highScore;
+    if (isNewHigh) stats.highScore = game.totalScore;
+    stats.bestStreakEver = Math.max(stats.bestStreakEver, game.bestStreakThisGame);
+    saveStats(stats);
+    renderStatsRow();
+
+    var scorePct = game.totalScore / MAX_POSSIBLE * 100;
+    var grade = gradeFor(scorePct);
+    document.getElementById("endEmoji").textContent = grade.emoji;
+    document.getElementById("endTitle").textContent = grade.title;
+    document.getElementById("endScore").textContent = game.totalScore + " / " + MAX_POSSIBLE + " points (" + scorePct.toFixed(0) + "%)";
+    document.getElementById("endNewBest").classList.toggle("hidden", !isNewHigh);
+
+    var rows = "<tr><th>Odds</th><th>You</th><th>Actual</th><th>Off by</th><th>Pts</th></tr>";
+    game.results.forEach(function (r) {
+      rows += "<tr><td class='mono'>" + formatOdds(r.odds) + "</td><td>" + r.guess + "%</td><td>" +
+        r.actual.toFixed(1) + "%</td><td>" + r.error.toFixed(1) + "%</td><td>" + r.points + "</td></tr>";
+    });
+    document.getElementById("summaryTable").innerHTML = rows;
+
+    showScreen("end");
+    if (isNewHigh) fireConfetti();
+  }
+
+  document.getElementById("btnCopy").addEventListener("click", function () {
+    var scorePct = (game.totalScore / MAX_POSSIBLE * 100).toFixed(0);
+    var grade = gradeFor(game.totalScore / MAX_POSSIBLE * 100);
+    var text = "Odds Instinct — " + game.totalScore + "/" + MAX_POSSIBLE + " (" + scorePct + "%) " +
+      grade.emoji + " " + grade.title + " · best streak " + game.bestStreakThisGame;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(function () {
+        var btn = document.getElementById("btnCopy");
+        var old = btn.textContent;
+        btn.textContent = "Copied!";
+        setTimeout(function () { btn.textContent = old; }, 1200);
+      });
+    }
+  });
+
+  // ---------- Confetti (tiny, self-contained) ----------
+  function fireConfetti() {
+    var canvas = document.getElementById("confetti");
+    canvas.classList.remove("hidden");
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    var ctx = canvas.getContext("2d");
+    var colors = ["#22d3a5", "#f5b942", "#4f9dff", "#ef4444", "#ffffff"];
+    var particles = [];
+    for (var i = 0; i < 90; i++) {
+      particles.push({
+        x: canvas.width / 2,
+        y: canvas.height / 3,
+        vx: (Math.random() - 0.5) * 12,
+        vy: Math.random() * -10 - 4,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        size: Math.random() * 6 + 4,
+        rot: Math.random() * Math.PI * 2,
+        vrot: (Math.random() - 0.5) * 0.3
+      });
+    }
+    var start = performance.now();
+    function frame(now) {
+      var elapsed = now - start;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      particles.forEach(function (p) {
+        p.vy += 0.35;
+        p.x += p.vx;
+        p.y += p.vy;
+        p.rot += p.vrot;
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rot);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+        ctx.restore();
+      });
+      if (elapsed < 2200) {
+        requestAnimationFrame(frame);
+      } else {
+        canvas.classList.add("hidden");
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+})();
+</script>
+</body>
+</html>
