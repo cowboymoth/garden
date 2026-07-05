@@ -594,8 +594,12 @@
     var error = Math.abs(guess - actual);
     var remainingSeconds = isTimeout ? 0 : Math.max(0, (game.deadline - performance.now()) / 1000);
 
-    // Error is the main driver of score: 0 pts once you're 20%+ off.
-    var accuracyPts = Math.max(0, Math.round(MAX_ACCURACY_PTS - error * (MAX_ACCURACY_PTS / 20)));
+    // Error is the main driver of score: 0 pts once you're 20%+ off. The slider only
+    // offers whole-percent resolution, so anything within half a point is as perfect
+    // as physically possible and scores full marks rather than getting docked for it.
+    var accuracyPts = error <= 0.5
+      ? MAX_ACCURACY_PTS
+      : Math.max(0, Math.round(MAX_ACCURACY_PTS - error * (MAX_ACCURACY_PTS / 20)));
     // No penalty for the first SPEED_GRACE_SECONDS; after that it decays linearly to 0 at the timeout.
     var decayWindow = TIME_PER_Q - SPEED_GRACE_SECONDS;
     var speedFrac = Math.min(1, remainingSeconds / decayWindow);
