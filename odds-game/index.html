@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Odds Instinct</title>
+<title>The Odds Game</title>
 <style>
   :root {
     --bg: #0a0e14;
@@ -293,7 +293,7 @@
 
   <!-- START SCREEN -->
   <div id="screen-start">
-    <h1>Odds Instinct 🎯</h1>
+    <h1>The Odds Game 🎯</h1>
     <div class="subtitle">10 American odds. 8 seconds each. No calculator allowed.</div>
 
     <div class="stats-row" id="statsRow"></div>
@@ -732,7 +732,7 @@
   document.getElementById("btnCopy").addEventListener("click", function () {
     var scorePct = (game.totalScore / MAX_POSSIBLE * 100).toFixed(0);
     var grade = gradeFor(game.totalScore / MAX_POSSIBLE * 100);
-    var text = "Odds Instinct — " + game.totalScore + "/" + MAX_POSSIBLE + " (" + scorePct + "%) " +
+    var text = "The Odds Game — " + game.totalScore + "/" + MAX_POSSIBLE + " (" + scorePct + "%) " +
       grade.emoji + " " + grade.title + " · best streak " + game.bestStreakThisGame;
     if (navigator.clipboard) {
       navigator.clipboard.writeText(text).then(function () {
