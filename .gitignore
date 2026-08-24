@@ -1,0 +1,44 @@
+# ── generated / OS ───────────────────────────────────────────────────────
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+
+# ── local machine config, not shared ─────────────────────────────────────
+**/.claude/settings.local.json
+
+# ── local working notes ──────────────────────────────────────────────────
+# The tracked CLAUDE.md is the *portable* version, deliberately free of any
+# reference to work projects. CLAUDE.local.md is the fuller local copy that
+# names them — it stays off the public repo.
+CLAUDE.local.md
+
+# ── stale backups: git history replaces these ────────────────────────────
+*.backup-*.html
+
+# ── known cruft ──────────────────────────────────────────────────────────
+nightcore/page7.html
+
+# ── third-party media: THIS REPO IS PUBLIC ───────────────────────────────
+# The album rip, the nightcore renders derived from it, and the auction-house
+# catalogues are all commercial copyrighted material. They are also ~340MB,
+# which GitHub would want in Git LFS regardless (the largest PDF is 74MB,
+# against a 100MB hard limit per file).
+#
+# They stay local. Delete a line below if you decide a category is yours to
+# publish — but the scripts are all written to read from local paths, so
+# nothing here needs them committed to run.
+*.mp3
+*.wav
+*.flac
+*.m4a
+*.aac
+*.pdf
+
+# Song-lyrics corpus — third-party text, same reasoning as above.
+drake/drake_data.xls
+
+# The tracked CLAUDE.md *is* this file's content — committing both would be a
+# duplicate. Keep it locally as the source you copy from.
+CLAUDE-portable.md

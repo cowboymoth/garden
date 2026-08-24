@@ -1,0 +1,3140 @@
+<meta charset="utf-8">
+<title>Doodle Armature</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    /* Warmed to the paper's own hue family. The old blue-grey studio was a
+       cool ground under a warm cream sheet, and the two never sat together. */
+    --studio:#23201a; --panel:#2c2822; --rule:#3b362d;
+    --chalk:#a9a294; --chalk-dim:#736d61; --paper:#e9e3d6; --ink:#232a22;
+    --terracotta:#b4654a; --sage:#7d8a6a;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --serif:"Instrument Serif",Georgia,serif;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--studio); color:var(--chalk);
+    font-family:var(--mono); font-size:13px; line-height:1.5;
+    display:flex; flex-direction:column; align-items:center;
+    padding:22px 20px 56px; min-height:100vh;
+  }
+  .bar{width:100%; max-width:1180px; display:flex; gap:10px; align-items:center;
+    flex-wrap:wrap; padding:10px 12px; background:var(--panel);
+    border:1px solid var(--rule); border-radius:2px; margin-bottom:14px}
+  .tabs{display:flex; gap:2px; flex-wrap:wrap}
+  button{font-family:var(--mono); font-size:12px; color:var(--chalk);
+    background:transparent; border:1px solid var(--rule); border-radius:2px;
+    padding:6px 10px; cursor:pointer; transition:background .12s,color .12s}
+  button:hover{background:#23272e; color:var(--paper)}
+  button:focus-visible{outline:2px solid var(--terracotta); outline-offset:2px}
+  button[aria-pressed="true"]{background:var(--paper); color:var(--ink); border-color:var(--paper)}
+  .tab-solid{color:var(--chalk-dim); font-size:10px; margin-left:6px}
+  button[aria-pressed="true"] .tab-solid{color:#6b6f63}
+  .spacer{flex:1 1 auto}
+  label.slider{display:flex; align-items:center; gap:8px; font-size:11px;
+    color:var(--chalk-dim); letter-spacing:.06em; text-transform:uppercase}
+  input[type=range]{width:130px; accent-color:var(--terracotta)}
+  .sheet-wrap{width:100%; max-width:1180px; position:relative}
+  canvas{display:block; width:100%; height:auto; border-radius:1px;
+    box-shadow:0 24px 60px -18px #000, 0 2px 0 #0006, 0 0 0 1px #0008; cursor:pointer}
+  footer{width:100%; max-width:1180px; margin-top:16px; display:flex; gap:20px;
+    flex-wrap:wrap; color:var(--chalk-dim); font-size:11px}
+  footer b{color:var(--chalk); font-weight:500}
+  .seedline{font-variant-numeric:tabular-nums}
+  @media (prefers-reduced-motion:reduce){button{transition:none}}
+</style>
+
+<div class="bar">
+  <div class="tabs" id="tabs"></div>
+  <span class="spacer"></span>
+  <label class="slider">Turn
+    <input type="range" id="turn" min="-45" max="45" value="0" step="1">
+  </label>
+  <button id="armature" aria-pressed="false">Show armature</button>
+  <button id="play" aria-pressed="false">Animate</button>
+  <button id="reroll">New sheet</button>
+</div>
+
+<div class="sheet-wrap"><canvas id="c" width="2360" height="1475"></canvas></div>
+
+<footer>
+  <span><b>Click any specimen</b> to reroll just that one.</span>
+  <span class="seedline">sheet <b id="seedout">—</b></span>
+  <span><b id="countout">40</b> specimens</span>
+  <span>ink #232a22 · paper #e9e3d6</span>
+  <span>gates <b id="gateout">—</b></span>
+  <span>tools <b id="toolout">—</b></span>
+</footer>
+
+<script>
+/* ─────────────────────────────────────────────────────────────────────────
+   A generative doodle sheet.
+
+   The idea worth understanding: the drawings are NOT laid out on a flat
+   canvas. Each subject has an invisible 3D solid under it — an ellipsoid for
+   a head, a tilted disc for a beetle — and every part (an eye, a leg) is
+   pinned to a (u,v) coordinate on that solid's surface. To draw, we rotate
+   the solid, project each anchor to 2D, and place the part there. Rotate the
+   solid and the features move correctly, including hiding round the back.
+
+   Each part's ORIENTATION comes from the solid's own global axes, not from
+   the surface tangent at its anchor. That matters: tangents all converge at
+   the poles, so tangent-oriented parts collapse into a mess up there.
+   ───────────────────────────────────────────────────────────────────────── */
+
+const PAPER="#e9e3d6", INK="#232a22";
+const TINTS=["#b4654a","#7d8a6a","#c08f8a","#8a7f6a"];   // terracotta, sage, dusty rose, clay
+const COLS=8, ROWS=5;
+/* The grid is per-subject. A flower is tall and narrow and wants height, so it
+   takes half the rows; a head wants room to be looked at, so it takes a coarser
+   6x4 and gets a much bigger cell. `fillK` and `ryK` then spend that room. */
+let cols=COLS, rows=ROWS, N=COLS*ROWS;
+function gridFor(i){
+  const S0=SUBJECTS[i];
+  cols=S0.cols||COLS; rows=S0.rows||ROWS; N=cols*rows;
+}
+const MAX_TRIES=14;                  // how many rerolls a cell gets before the gates give up
+/* One dial for overall line weight. Scaling inside stroke() rather than editing
+   forty call sites keeps the heavy-outline / light-detail ratio intact. */
+const BOLD=1.14;
+
+const cv=document.getElementById("c"), ctx=cv.getContext("2d");
+
+/* ── animation ────────────────────────────────────────────────────────────
+   A full redraw of the sheet costs about 20ms, so this animates by genuinely
+   REDRAWING rather than by sliding cached bitmaps around. That matters: it
+   means the armature itself moves, and every part follows it because every part
+   was pinned to the solid in the first place. This is the thing the whole
+   design was for.
+
+   The hard constraint: only ever animate CONTINUOUS parameters that do not
+   change how much randomness a frame consumes. The ink comes from a seeded rng
+   read in order, so touching anything that alters the consumption — swapping a
+   mouth style, adding a part — would re-roll every wobble downstream of it and
+   the linework would boil. Perturb numbers, never branches, and the drawing
+   stays rock steady while the pose moves. */
+let animT=0, playing=false;
+const anim={wig:0, hair:0, smile:0, lid:0};
+/* Level of detail while animating.
+
+   I assumed the bottleneck was canvas CALL VOLUME and batched every dash into
+   Path2D buckets — 276,000 calls down to 28,000. Flowers got twice as SLOW. The
+   cost is not call overhead, it is raster area: hundreds of thousands of tiny
+   translucent strokes, and the pixel-fill work is identical either way. So the
+   only real lever is drawing fewer marks, and the honest place to spend that is
+   in motion, where nobody can count the hatching anyway.
+
+   `LOD` scales dry-media density; `heavy()` gates the passes that cost the most
+   for the least — per-petal shading on a flower, the second rank of rays. */
+/* Tuned against the 33ms frame budget, and retuned each time the drawings grew:
+   bigger heads mean more raster area, which is the thing that actually costs. */
+const LOD=()=>playing?0.21:1;
+const heavy=()=>!playing;
+
+/* ── seeded randomness ────────────────────────────────────────────────────
+   mulberry32: same seed always gives the same drawing, which is what lets a
+   single cell be rerolled without disturbing its neighbours. */
+function rng(seed){
+  let a=seed>>>0;
+  return function(){
+    a=(a+0x6D2B79F5)>>>0;
+    let t=Math.imul(a^(a>>>15),1|a);
+    t=(t+Math.imul(t^(t>>>7),61|t))^t;
+    return ((t^(t>>>14))>>>0)/4294967296;
+  };
+}
+const R=r=>(lo,hi)=>lo+(hi-lo)*r();                 // uniform
+const PICK=r=>arr=>arr[Math.floor(r()*arr.length)]; // choose a variant
+const CHANCE=r=>p=>r()<p;
+
+/* ── 3D: rotation, ellipsoid surface, projection ──────────────────────── */
+function rot(yaw,pitch,roll){
+  const cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pitch),sp=Math.sin(pitch),
+        cr=Math.cos(roll),sr=Math.sin(roll);
+  // Z(roll) · X(pitch) · Y(yaw)
+  return [
+    [cr*cy+sr*sp*sy, -sr*cp, cr*sy-sr*sp*cy],
+    [sr*cy-cr*sp*sy,  cr*cp, sr*sy+cr*sp*cy],
+    [-cp*sy,          -sp,    cp*cy]
+  ];
+}
+const mul=(M,v)=>[
+  M[0][0]*v[0]+M[0][1]*v[1]+M[0][2]*v[2],
+  M[1][0]*v[0]+M[1][1]*v[1]+M[1][2]*v[2],
+  M[2][0]*v[0]+M[2][1]*v[1]+M[2][2]*v[2]];
+
+/* A point on the ellipsoid from surface coords.
+   u = around (0..1, 0 = front), v = pole to pole (-1 top .. +1 bottom) */
+function onSolid(S,u,v){
+  const phi=v*Math.PI/2, th=u*Math.PI*2;
+  const c=Math.cos(phi);
+  return [S.rx*c*Math.sin(th), S.ry*Math.sin(phi), S.rz*c*Math.cos(th)];
+}
+function normalAt(S,u,v){
+  const p=onSolid(S,u,v);
+  const n=[p[0]/(S.rx*S.rx), p[1]/(S.ry*S.ry), p[2]/(S.rz*S.rz)];
+  const L=Math.hypot(...n)||1; return [n[0]/L,n[1]/L,n[2]/L];
+}
+/* Project to 2D. Orthographic with a whisper of perspective so a turned
+   head still reads as solid rather than flat. */
+const PERSP=0.00042;
+function project(S,p){
+  const w=mul(S.M,p);
+  const k=1/(1+PERSP*(w[2]+300));
+  return [w[0]*k, w[1]*k, w[2]];
+}
+/* The solid's global axes, projected — this is what parts orient against. */
+function axes(S){
+  const X=mul(S.M,[1,0,0]), Y=mul(S.M,[0,1,0]);
+  return {ax:[X[0],X[1]], ay:[Y[0],Y[1]]};
+}
+/* Place a part: 2D position from the projected anchor, orientation and scale
+   from the global axes. `facing` > 0 means the anchor points at the viewer. */
+function anchor(S,u,v){
+  const p=onSolid(S,u,v), q=project(S,p), n=mul(S.M,normalAt(S,u,v));
+  return {x:q[0], y:q[1], depth:q[2], facing:n[2], ...axes(S)};
+}
+/* Map a part-local offset (right, down) into page space via the global axes. */
+function place(A,rx,dy){
+  return [A.x+A.ax[0]*rx+A.ay[0]*dy, A.y+A.ax[1]*rx+A.ay[1]*dy];
+}
+
+/* ── the pen ──────────────────────────────────────────────────────────────
+   Every stroke is a point array pushed off its true path by a few summed
+   sines. Low-frequency wobble reads as a wavering hand; per-point noise just
+   reads as static, so it is never used. Two passes at slightly different
+   width and alpha give the doubled-back look of a real ink line. */
+function pathLen(pts){
+  let L=0; for(let i=1;i<pts.length;i++) L+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]);
+  return L;
+}
+/* Resample a path so the pen has something to waver along. A triangle drawn as
+   three points cannot wobble at all — it inks as three ruler-straight edges,
+   which is exactly what made the ears and legs look mechanical. */
+function densify(pts,step=7){
+  if(pts.length<2) return pts;
+  const out=[pts[0]];
+  for(let i=1;i<pts.length;i++){
+    const a=out[out.length-1], b=pts[i];
+    const d=Math.hypot(b[0]-a[0],b[1]-a[1]);
+    const n=Math.max(1,Math.ceil(d/step));
+    for(let k=1;k<=n;k++) out.push([a[0]+(b[0]-a[0])*k/n, a[1]+(b[1]-a[1])*k/n]);
+  }
+  return out;
+}
+/* Push a path off its true line with a few summed sines.
+   `amp` is a FRACTION OF PATH LENGTH, not pixels. Keep it small on closed
+   outlines: at 0.044 a head silhouette deviated by a third of its own radius,
+   and every specimen on the sheet read as two overlapping heads. */
+function wobble(pts,r,amp,phase){
+  const L=pathLen(pts)||1, A=L*amp;
+  const p1=phase,p2=phase*1.7+1.1,p3=phase*2.9+2.3;
+  const f1=0.7+r()*0.9, f2=f1*2.2+r()*0.6, f3=f1*4.4;
+  const out=[];
+  for(let i=0;i<pts.length;i++){
+    const t=i/(pts.length-1||1);
+    const a=pts[Math.max(0,i-1)], b=pts[Math.min(pts.length-1,i+1)];
+    let nx=-(b[1]-a[1]), ny=(b[0]-a[0]);
+    const M=Math.hypot(nx,ny)||1; nx/=M; ny/=M;
+    const d=A*(Math.sin(f1*6.28*t+p1)*0.62+Math.sin(f2*6.28*t+p2)*0.26+Math.sin(f3*6.28*t+p3)*0.12);
+    out.push([pts[i][0]+nx*d, pts[i][1]+ny*d]);
+  }
+  return out;
+}
+/* Extend a stroke a little past its ends — a hand doesn't stop exactly on the
+   corner. This one detail does more for "sketchy" than any amount of noise. */
+function overshoot(pts,r,k){
+  if(pts.length<2||k<=0) return pts;
+  const q=pts.map(p=>[p[0],p[1]]);
+  const ext=(a,b,amt)=>{const dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy)||1;
+    return [b[0]+dx/L*amt, b[1]+dy/L*amt];};
+  const L=pathLen(pts);
+  q.unshift(ext(q[1],q[0],L*k*(0.4+r()*0.9)));
+  q.push(ext(q[q.length-2],q[q.length-1],L*k*(0.4+r()*0.9)));
+  return q;
+}
+/* ── the media library ───────────────────────────────────────────────────
+   Every mark on the sheet used to come out of the same pen. But a utensil has
+   a signature, and it is mostly about how WIDTH behaves along a stroke:
+
+     pen       thin, near-constant, doubling back over itself
+     tech      dead uniform — the one clean tool, for contrast
+     brush     loads and unloads: fat in the middle, tapering to a point
+     marker    blunt and bleeding, square ends, a halo pushed into the paper
+     dip       hairline to blot, the nib catching and the ink pooling
+     charcoal  broad, skipping, shedding grit
+     crayon    waxier still: wider, skips more, blunt ends
+     pencil    the skipping dash, walked along a contour instead of scattered
+
+   `tool` is picked ONCE PER SPECIMEN and every mark in that drawing obeys it —
+   outline, hair, features. That consistency is the whole point: it makes the
+   sheet read as forty drawings made with different tools rather than forty
+   drawings made with forty random effects. */
+const MEDIA=["pen","pen","pen","pen","brush","brush","brush","marker","marker",
+             "dip","dip","charcoal","charcoal","crayon","pencil","pencil","tech"];
+/* Each tool needs a different nominal width to sit at the same visual weight. */
+const TOOLW={pen:1,tech:1,brush:1.30,marker:1.10,dip:1.05,
+             charcoal:1.55,crayon:1.55,pencil:1.15};
+const DRY=new Set(["charcoal","crayon","pencil"]);
+let tool="pen";
+
+/* pen: a couple of chunks at slightly different width, so pressure varies down
+   the stroke instead of being a uniform ribbon. */
+function penPass(q,w,alpha,r,col){
+  const chunks=2+Math.floor(r()*2), n=q.length;
+  for(let c=0;c<chunks;c++){
+    const i0=Math.floor(c*(n-1)/chunks), i1=Math.floor((c+1)*(n-1)/chunks)+1;
+    if(i1-i0<2) continue;
+    ctx.beginPath(); ctx.moveTo(q[i0][0],q[i0][1]);
+    for(let i=i0+1;i<Math.min(i1,n);i++) ctx.lineTo(q[i][0],q[i][1]);
+    ctx.strokeStyle=col; ctx.globalAlpha=alpha*(0.90+r()*0.16);
+    ctx.lineWidth=w*(0.90+r()*0.22); ctx.lineCap="round"; ctx.lineJoin="round";
+    ctx.stroke();
+  }
+  ctx.globalAlpha=1;
+}
+function techPass(q,w,alpha,r,col){
+  ctx.beginPath(); ctx.moveTo(q[0][0],q[0][1]);
+  for(let i=1;i<q.length;i++) ctx.lineTo(q[i][0],q[i][1]);
+  ctx.strokeStyle=col; ctx.globalAlpha=alpha; ctx.lineWidth=w*0.70;
+  ctx.lineCap="round"; ctx.lineJoin="round"; ctx.stroke();
+  ctx.globalAlpha=1;
+}
+/* A line of VARYING width is a polygon, not a line — so the brush is drawn as
+   a filled ribbon, offsetting each point along the path normal by its own
+   half-width. Open strokes taper to a point at both ends; closed ones swell
+   and thin round the loop instead, or the outline would break where the taper
+   pinches out. */
+function brushPass(q,w,alpha,r,col){
+  const n=q.length; if(n<3) return;
+  const rr=R(r), bulge=rr(0.95,1.6), skew=rr(0.35,0.85);
+  const closed=Math.hypot(q[0][0]-q[n-1][0],q[0][1]-q[n-1][1])<w*2.5;
+  const swf=rr(1.6,3.4), sph=rr(0,6.28);
+  const A=[],B=[];
+  for(let i=0;i<n;i++){
+    const t=i/(n-1);
+    const press=closed ? 0.52+0.48*Math.sin(t*6.283*swf+sph)
+                       : Math.pow(Math.sin(Math.PI*Math.pow(t,skew*1.7)),0.65);
+    const ww=w*bulge*(closed?press:0.10+0.90*press);
+    const a=q[Math.max(0,i-1)], b=q[Math.min(n-1,i+1)];
+    let nx=-(b[1]-a[1]), ny=(b[0]-a[0]);
+    const M=Math.hypot(nx,ny)||1; nx/=M; ny/=M;
+    A.push([q[i][0]+nx*ww/2, q[i][1]+ny*ww/2]);
+    B.push([q[i][0]-nx*ww/2, q[i][1]-ny*ww/2]);
+  }
+  ctx.beginPath(); ctx.moveTo(A[0][0],A[0][1]);
+  for(let i=1;i<n;i++) ctx.lineTo(A[i][0],A[i][1]);
+  for(let i=n-1;i>=0;i--) ctx.lineTo(B[i][0],B[i][1]);
+  ctx.closePath();
+  ctx.fillStyle=col; ctx.globalAlpha=alpha*rr(0.86,1.0); ctx.fill();
+  ctx.globalAlpha=1;
+}
+/* A marker is blunt: a broad even stroke with square ends.
+
+   It used to lay a wide 0.15-alpha pass underneath first, meant as ink bleeding
+   into the paper. Around a dark line that does not read as bleed, it reads as a
+   GLOW — the one genuinely digital-looking thing left on the sheet — so it is
+   gone. What actually distinguishes a felt tip is the flat cap and the even
+   width, not a halo. */
+function markerPass(q,w,alpha,r,col){
+  const rr=R(r);
+  ctx.beginPath(); ctx.moveTo(q[0][0],q[0][1]);
+  for(let i=1;i<q.length;i++) ctx.lineTo(q[i][0],q[i][1]);
+  ctx.strokeStyle=col; ctx.globalAlpha=alpha*rr(0.90,1.0);
+  ctx.lineWidth=w*1.45*rr(0.94,1.06); ctx.lineCap="butt"; ctx.lineJoin="round";
+  ctx.stroke();
+  ctx.globalAlpha=1;
+}
+/* A dip pen runs from hairline to blot. The nib catches, the width jumps, and
+   the ink pools where it hesitated — plus the odd fleck thrown off the nib. */
+function dipPass(q,w,alpha,r,col){
+  const rr=R(r), n=q.length, segs=4+Math.floor(r()*3);
+  for(let c=0;c<segs;c++){
+    const i0=Math.floor(c*(n-1)/segs), i1=Math.floor((c+1)*(n-1)/segs)+1;
+    if(i1-i0<2) continue;
+    ctx.beginPath(); ctx.moveTo(q[i0][0],q[i0][1]);
+    for(let i=i0+1;i<Math.min(i1,n);i++) ctx.lineTo(q[i][0],q[i][1]);
+    ctx.strokeStyle=col; ctx.globalAlpha=alpha*rr(0.72,1.0);
+    ctx.lineWidth=w*rr(0.40,1.40); ctx.lineCap="round"; ctx.lineJoin="round";
+    ctx.stroke();
+  }
+  ctx.fillStyle=col;
+  for(let i=0;i<Math.round(rr(0,3.2));i++){          // pooled blots
+    const k=Math.floor(rr(0,n));
+    ctx.beginPath(); ctx.arc(q[k][0],q[k][1],w*rr(0.7,1.8),0,6.29);
+    ctx.globalAlpha=alpha*rr(0.7,1.0); ctx.fill();
+  }
+  for(let i=0;i<Math.round(rr(0,2.4));i++){          // flecks off the nib
+    const k=Math.floor(rr(0,n)), d=w*rr(2,6);
+    ctx.beginPath();
+    ctx.arc(q[k][0]+(r()-0.5)*d,q[k][1]+(r()-0.5)*d,w*rr(0.12,0.34),0,6.29);
+    ctx.globalAlpha=alpha*rr(0.3,0.8); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+}
+/* Dry media as a CONTOUR: the same skipping dashes as the fills, walked along
+   a path instead of scattered through a region. */
+function dryPass(q,w,alpha,r,col,{skip=0.3,grit=0,blunt=false}={}){
+  const rr=R(r);
+  ctx.lineCap=blunt?"butt":"round"; ctx.strokeStyle=col;
+  /* The skip has to be CORRELATED. Deciding it independently for every 7px
+     segment turns a contour into a dotted line — which is exactly what the
+     crayon heads were doing. A stick of charcoal rides the paper for a good
+     stretch and then loses it for a moment, so this walks in runs of contact
+     separated by short lifts, and each run is drawn as one polyline. */
+  let i=1;
+  while(i<q.length){
+    const run=2+Math.floor(rr(0,9*(1-skip)+2));
+    const end=Math.min(q.length,i+run);
+    ctx.beginPath(); ctx.moveTo(q[i-1][0],q[i-1][1]);
+    for(let k=i;k<end;k++) ctx.lineTo(q[k][0],q[k][1]);
+    ctx.globalAlpha=alpha*rr(0.55,1.0); ctx.lineWidth=w*rr(0.62,1.38);
+    ctx.stroke();
+    if(grit) for(let k=i;k<end;k++) if(r()<0.22){
+      const g=w*rr(0.18,0.48);
+      ctx.globalAlpha=alpha*rr(0.15,0.65); ctx.fillStyle=col;
+      ctx.fillRect(q[k][0]+(r()-0.5)*w*2.8, q[k][1]+(r()-0.5)*w*2.8, g, g);
+    }
+    i=end+(r()<skip*1.6 ? 1+Math.floor(rr(0,2.2)) : 0);
+  }
+  ctx.globalAlpha=1;
+}
+function inkPass(q,w,alpha,r,col){
+  switch(tool){
+    case "tech":     return techPass(q,w,alpha,r,col);
+    case "brush":    return brushPass(q,w,alpha,r,col);
+    case "marker":   return markerPass(q,w,alpha,r,col);
+    case "dip":      return dipPass(q,w,alpha,r,col);
+    case "charcoal": return dryPass(q,w,alpha*0.92,r,col,{skip:0.24,grit:1.1});
+    case "crayon":   return dryPass(q,w,alpha*0.95,r,col,{skip:0.28,grit:0.4,blunt:true});
+    case "pencil":   return dryPass(q,w,alpha,r,col,{skip:0.15,grit:0});
+    default:         return penPass(q,w,alpha,r,col);
+  }
+}
+function stroke(pts,r,{w=1.9,alpha=1,passes=1,close=false,amp=0.028,over=0.02,col=INK}={}){
+  if(pts.length<2) return;
+  let base=densify(close?pts.concat([pts[0]]):pts);
+  const ph=r()*6.28;
+  // the broad tools are emphatic enough on one pass; doubling them is mud
+  const np=(tool==="brush"||tool==="marker"||tool==="charcoal"||tool==="crayon")
+    ? 1 : passes;
+  for(let k=0;k<np;k++){
+    /* Both passes share a wobble phase, nudged slightly apart. They used to
+       roll INDEPENDENT phases at 1.35x amplitude, which on a closed outline
+       pushed the two lines up to twenty pixels apart — the ghost second head
+       that made every specimen look doubled. A hand going back over a line
+       retraces it; it does not draw a different line. */
+    let q=wobble(base,r,amp*(k?1.06:1),ph+(k?0.55:0));
+    if(!close) q=overshoot(q,r,over*(k?1.6:1));
+    // and a small bodily offset so the doubled line isn't concentric — but
+    // keep it tight on closed shapes, or one head reads as two
+    if(k){ const L=pathLen(base)*amp*(close?0.10:0.30),
+                 dx=(r()-0.5)*L, dy=(r()-0.5)*L;
+           q=q.map(pt=>[pt[0]+dx,pt[1]+dy]); }
+    inkPass(q,w*BOLD*TOOLW[tool]*(k?0.50:1),alpha*(k?0.34:1),r,col);
+  }
+}
+/* Sample an arc into points so the pen can wobble it — nothing is ever drawn
+   with ctx.arc directly, or it would come out mechanically perfect. */
+function arc(cx,cy,rx,ry,a0,a1,steps=26,tilt=0){
+  const pts=[], ct=Math.cos(tilt), st=Math.sin(tilt);
+  for(let i=0;i<=steps;i++){
+    const a=a0+(a1-a0)*i/steps, x=rx*Math.cos(a), y=ry*Math.sin(a);
+    pts.push([cx+x*ct-y*st, cy+x*st+y*ct]);
+  }
+  return pts;
+}
+/* ── colour ──────────────────────────────────────────────────────────────
+   Colour goes in as a PATCH that does not line up with the drawing: a shrunken,
+   offset copy of the form, or a couple of blobs on the cheeks. Flooding the
+   whole silhouette at low alpha — which is what this used to do — is the
+   colouring-book move: it reads as fill, and it kills the paper. The reference
+   sheets keep most of the paper bare and let the colour miss the line, the way
+   a badly registered second plate prints. */
+function tintPatch(S,r,unit,col,sil,mode="plate"){
+  const rr=R(r);
+  /* Colour goes on as COLOURED PENCIL, not as a fill. A flat fillPts of a tint
+     over the whole silhouette reads as a paint bucket and it kills the paper.
+     Shading it means the tooth shows through and the colour varies across the
+     form the way a hand laying down a pencil does. It still misregisters — a
+     shrunken, offset copy — so the colour misses the line. */
+  if(mode==="body"){                             // a shell is coloured to its edge
+    const k=rr(0.95,1.0), dx=unit*rr(-0.014,0.014), dy=unit*rr(-0.012,0.012);
+    clipTo(sil.map(q=>[q[0]*k+dx,q[1]*k+dy]),
+      ()=>pencilShade(S,r,unit,col,{dens:1.35,alpha:1.15,medium:"colour"}));
+    return;
+  }
+  if(r()<0.62){                                  // a misregistered second plate
+    const k=rr(0.82,0.99), dx=unit*rr(-0.05,0.05), dy=unit*rr(-0.045,0.05);
+    clipTo(sil.map(q=>[q[0]*k+dx,q[1]*k+dy]),
+      ()=>pencilShade(S,r,unit,col,{dens:rr(1.05,1.45),alpha:1.05,medium:"colour"}));
+    return;
+  }
+  for(const s of [-1,1]){                        // or just the cheeks
+    if(r()<0.20) continue;
+    const A=anchor(S,s*rr(0.13,0.19),rr(0.10,0.22));
+    if(A.facing<0.10) continue;
+    const q=place(A,rr(-0.03,0.03)*unit,rr(-0.03,0.03)*unit);
+    clipTo(arc(q[0],q[1],unit*rr(0.055,0.105),unit*rr(0.045,0.090),0,6.29,20),
+      ()=>pencilShade(S,r,unit,col,{dens:1.2,alpha:1.1,len:0.6,medium:"colour"}));
+  }
+}
+/* ── pencil and charcoal ─────────────────────────────────────────────────
+   One dry-media stroke, and it is deliberately NOT a continuous line.
+   Graphite, coloured pencil and charcoal all sit on the high points of the
+   paper and skip the hollows, and that skipping is the single thing separating
+   a real mark from a gradient: a radial falloff is perfectly smooth, which
+   nothing made by hand ever is. So a stroke goes down as a run of short dashes
+   with gaps, each at its own weight, pressure easing in and out along it.
+
+   Charcoal differs from pencil in kind, not degree — the mark is several times
+   wider, it skips far more, and it CRUMBLES: loose grains fall off the edge of
+   every stroke. That grit is what makes charcoal read as charcoal. */
+function pencilStroke(a,b,r,{w=1.2,alpha=0.5,col=INK,skip=0.35,grit=0}={}){
+  const rr=R(r);
+  const L=Math.hypot(b[0]-a[0],b[1]-a[1]);
+  const n=Math.max(2,Math.round(L/rr(2.0,4.2)));
+  ctx.lineCap="round"; ctx.strokeStyle=col;
+  for(let i=0;i<n;i++){
+    if(r()<skip) continue;                       // the tooth of the paper
+    const t0=i/n, t1=(i+1)/n;
+    const press=Math.sin(Math.PI*(t0+t1)/2)*0.7+0.3;
+    ctx.beginPath();
+    ctx.moveTo(a[0]+(b[0]-a[0])*t0, a[1]+(b[1]-a[1])*t0);
+    ctx.lineTo(a[0]+(b[0]-a[0])*t1, a[1]+(b[1]-a[1])*t1);
+    ctx.globalAlpha=alpha*press*rr(0.5,1.0);
+    ctx.lineWidth=w*rr(0.68,1.28);
+    ctx.stroke();
+  }
+  if(grit){                                      // charcoal sheds
+    ctx.fillStyle=col;
+    for(let i=0;i<Math.round(grit*n);i++){
+      const t=r(), g=w*(0.22+r()*0.5);
+      ctx.globalAlpha=alpha*r()*0.85;
+      ctx.fillRect(a[0]+(b[0]-a[0])*t+(r()-0.5)*w*3.4,
+                   a[1]+(b[1]-a[1])*t+(r()-0.5)*w*3.4, g, g);
+    }
+  }
+  ctx.globalAlpha=1;
+}
+/* ── technique ───────────────────────────────────────────────────────────
+   Every dry pass used to run through one function that scattered strokes at
+   RANDOM positions, so pencil, charcoal and smear came out as the same grey
+   cloud at three densities. Two fixes, and the first matters far more:
+
+   1. Shading marches in ordered RANKS — parallel strokes at roughly even
+      spacing laid across the region. The eye reads ranks as technique and
+      random scatter as mush. That change alone is most of the personality.
+   2. Each medium gets its own hand, below. A 6B stick and a coloured pencil do
+      not make the same mark and should not share a table row.
+
+   `gap` is rank spacing as a fraction of unit: the tighter it is, the more the
+   pass reads as deliberate hatching rather than as tone. */
+const TECHNIQUE={
+  // tight, even, near-single-direction: clean graphite
+  pencil:  {layers:2, jit:0.10, gap:0.017, w:[1.2,2.0], al:[0.17,0.31], skip:[0.18,0.38], grit:0,   span:[0.55,1.0]},
+  // proper crosshatch — big angle steps between layers, so the mesh shows
+  shade:   {layers:3, jit:0.58, gap:0.020, w:[1.1,1.9], al:[0.14,0.26], skip:[0.20,0.42], grit:0,   span:[0.45,0.95]},
+  // one sparse pass of short flicks: the lightest thing in the box
+  tooth:   {layers:1, jit:0,    gap:0.032, w:[0.9,1.5], al:[0.13,0.24], skip:[0.34,0.58], grit:0,   span:[0.22,0.52]},
+  // broad ranks, wide apart, shedding grit
+  charcoal:{layers:2, jit:0.24, gap:0.036, w:[3.0,6.6], al:[0.09,0.18], skip:[0.28,0.52], grit:1.3, span:[0.5,1.0]},
+  // rubbed: very wide, very faint, long UNBROKEN sweeps all one way
+  smear:   {layers:1, jit:0,    gap:0.030, w:[4.5,9.5], al:[0.05,0.11], skip:[0.08,0.22], grit:0.5, span:[0.92,1.0]},
+  // coloured pencil is its own animal: tight visible parallel lines in two
+  // directions, hard enough that you read the strokes and not a wash
+  colour:  {layers:2, jit:0.44, gap:0.0145,w:[1.5,2.7], al:[0.20,0.37], skip:[0.14,0.32], grit:0,   span:[0.5,1.0]},
+};
+/* Lay ordered ranks over the band the caller names, in page space, anchored on
+   the cell origin — which is the specimen's own centre, so the hatch travels
+   with the drawing rather than the drawing sliding through a fixed screen.
+
+   The ANGLE stays fixed in page space on purpose: a hand keeps its hatching
+   direction when the subject turns, so following the form's longitudes here
+   would look less like dry media, not more. The caller does the clipping. */
+function pencilShade(S,r,unit,col,{v0=-0.95,v1=0.95,dens=1,alpha=1,len=1,
+                                   medium="pencil"}={}){
+  dens*=LOD();
+  const rr=R(r), T=TECHNIQUE[medium]||TECHNIQUE.pencil;
+  const yA=Math.sin(clampV(v0)*Math.PI/2)*S.ry, yB=Math.sin(clampV(v1)*Math.PI/2)*S.ry;
+  const cy=(yA+yB)/2;
+  const reach=Math.hypot(S.rx*1.25, Math.abs(yB-yA)/2+unit*0.05)+unit*0.04;
+  const base=rr(-1.15,-0.35);
+  for(let L=0;L<T.layers;L++){
+    const ang=base+(L?T.jit*(L%2?1:-1)+rr(-0.08,0.08):0);
+    const ca=Math.cos(ang), sa=Math.sin(ang);
+    const gap=Math.max(unit*0.010, unit*T.gap/Math.max(0.45,dens));
+    const ranks=Math.min(46,Math.ceil(2*reach/gap));
+    for(let i=0;i<=ranks;i++){
+      // the spacing is jittered, or the ranks read as ruled rather than drawn
+      const q=-reach+2*reach*i/ranks+rr(-gap*0.34,gap*0.34);
+      const ox=-sa*q, oy=cy+ca*q;
+      const span=reach*2*rr(T.span[0],T.span[1])*len;
+      const t0=rr(-reach,Math.max(-reach,reach-span));
+      pencilStroke([ox+ca*t0,oy+sa*t0],[ox+ca*(t0+span),oy+sa*(t0+span)],r,{
+        w:rr(T.w[0],T.w[1]), alpha:rr(T.al[0],T.al[1])*alpha, col,
+        skip:rr(T.skip[0],T.skip[1]), grit:T.grit });
+    }
+  }
+}
+/* The same techniques over a shape's own bounding box. Needed for anything
+   drawn OUTSIDE the form — a top hat, a bun, a quiff lobe — where there is no
+   surface band to name and a v-range would mean nothing. */
+function pencilShadeBox(pts,r,unit,col,{dens=1,alpha=1,len=1,
+                                        medium="pencil"}={}){
+  dens*=LOD();
+  const rr=R(r), T=TECHNIQUE[medium]||TECHNIQUE.pencil;
+  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  for(const q of pts){ x0=Math.min(x0,q[0]); y0=Math.min(y0,q[1]);
+                       x1=Math.max(x1,q[0]); y1=Math.max(y1,q[1]); }
+  const cx=(x0+x1)/2, cy=(y0+y1)/2;
+  const reach=Math.hypot(x1-x0,y1-y0)/2+unit*0.02;
+  const base=rr(-1.15,-0.35);
+  for(let L=0;L<T.layers;L++){
+    const ang=base+(L?T.jit*(L%2?1:-1):0);
+    const ca=Math.cos(ang), sa=Math.sin(ang);
+    const gap=Math.max(unit*0.009, unit*T.gap/Math.max(0.45,dens));
+    const ranks=Math.min(30,Math.ceil(2*reach/gap));
+    for(let i=0;i<=ranks;i++){
+      const q=-reach+2*reach*i/ranks+rr(-gap*0.3,gap*0.3);
+      const ox=cx-sa*q, oy=cy+ca*q;
+      const span=reach*2*rr(T.span[0],T.span[1])*len;
+      const t0=rr(-reach,Math.max(-reach,reach-span));
+      pencilStroke([ox+ca*t0,oy+sa*t0],[ox+ca*(t0+span),oy+sa*(t0+span)],r,{
+        w:rr(T.w[0],T.w[1]), alpha:rr(T.al[0],T.al[1])*alpha, col,
+        skip:rr(T.skip[0],T.skip[1]), grit:T.grit });
+    }
+  }
+}
+function fillPts(pts,color=INK,alpha=1){
+  if(pts.length<3) return;
+  ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+  ctx.closePath(); ctx.globalAlpha=alpha; ctx.fillStyle=color; ctx.fill(); ctx.globalAlpha=1;
+}
+/* Short scratchy hatch inside a flat ellipse. Fine for anything already
+   positioned from a projected anchor; NOT for shading a curved surface —
+   see surfHatch below for why. */
+function hatch(cx,cy,rx,ry,r,{n=14,ang=-0.7,len=0.5,w=1}={}){
+  for(let i=0;i<n;i++){
+    const t=r(), a=ang+ (r()-0.5)*0.5;
+    const px=cx+(r()*2-1)*rx*0.82, py=cy+(r()*2-1)*ry*0.82;
+    if(((px-cx)/rx)**2+((py-cy)/ry)**2>1) continue;
+    const L=Math.min(rx,ry)*len*(0.5+t);
+    stroke([[px-Math.cos(a)*L/2,py-Math.sin(a)*L/2],
+            [px+Math.cos(a)*L/2,py+Math.sin(a)*L/2]],r,{w,passes:1,alpha:0.62,amp:0.024});
+  }
+}
+/* Clip drawing to a point-array region. This is how a hatch fills a haircut
+   exactly: the strokes stop dead at the hairline instead of leaking down the
+   forehead, which gives the hard edge the reference drawings live on. */
+function clipTo(pts,fn){
+  if(pts.length<3){ fn(); return; }
+  ctx.save(); ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+  ctx.closePath(); ctx.clip(); fn(); ctx.restore();
+}
+
+/* ── head shapes ─────────────────────────────────────────────────────────
+   The SOLID stays a plain ellipsoid — the armature, the (u,v) anchors and the
+   rules layer all keep working off it. What varies is the OUTLINE: a radial
+   multiplier applied to the projected silhouette. A pear is the same skull
+   with more jaw; nothing else has to know.
+
+   `a` runs from the +x side through the bottom (a = PI/2) round to the top, so
+   sin(a) is +1 at the chin and -1 at the crown. */
+const SHAPES=["egg","egg","round","round","pear","bell","long","wide","square",
+              "peanut","acorn","teardrop","lumpy","lopsided","gourd","kite",
+              "crescent","stone","spire","onion","bean","mushroom","slab",
+              "harmonic","harmonic","harmonic"];
+function shapeR(S,a){
+  const shape=S.shape, r1=S.r1;
+  const dn=Math.sin(a), sd=Math.abs(Math.cos(a));      // down-ness, side-ness
+  switch(shape){
+    case "egg":      return 1+0.10*dn;
+    case "pear":     return 1+0.20*dn+0.07*dn*dn;      // jaw heavier than crown
+    case "bell":     return 1-0.15*dn+0.20*dn*dn;
+    case "long":     return 1-0.15*sd;
+    case "wide":     return 1+0.14*sd-0.05*dn;
+    case "square":   return 0.92/Math.pow(Math.pow(sd,4)+Math.pow(Math.abs(dn),4),0.25);
+    case "peanut":   return 1-0.12*Math.abs(dn)+0.10*Math.cos(2*a);
+    case "acorn":    return 1-0.19*dn+0.10*sd;
+    case "teardrop": return 1+0.26*dn*Math.max(0,dn);
+    case "lumpy":    return 1+0.07*Math.sin(3*a+r1*6.28)+0.05*Math.sin(5*a-r1*3);
+    case "lopsided": return 1+0.11*Math.cos(a-1+r1*6.28);
+    // ── the weirder ones ─────────────────────────────────────────────────
+    // cos(2a) is +1 at the sides and -1 top and bottom, so subtracting it
+    // pinches a waist: a gourd. The dn term makes the lower lobe the bigger.
+    case "gourd":    return 1-0.19*Math.cos(2*a)+0.13*dn;
+    case "kite":     return 0.46+0.60/(sd+Math.abs(dn));          // a diamond
+    case "crescent": return 1-0.30*Math.pow(Math.max(0,Math.cos(a-r1*6.283)),2);
+    case "stone":    return 0.94/Math.pow(Math.pow(sd,3)+Math.pow(Math.abs(dn),3),1/3)
+                            *(1+0.055*Math.sin(5*a+r1*6.283));
+    case "spire":    return 1-0.11*sd+0.42*Math.pow(Math.max(0,-dn),4);
+    case "onion":    return 1+0.17*Math.max(0,dn)+0.34*Math.pow(Math.max(0,-dn),5);
+    case "bean":     return 1+0.13*Math.cos(a-1.1)
+                            -0.17*Math.pow(Math.max(0,Math.cos(a+2.0)),2);
+    case "mushroom": return 1-0.25*Math.max(0,dn)+0.16*sd*Math.max(0,-dn);
+    case "slab":     return 0.88/Math.pow(Math.pow(sd,6)+Math.pow(Math.abs(dn),6),1/6);
+    /* Sum a handful of harmonics with per-cell amplitudes and phases. Every
+       one of these is a silhouette that exists exactly once — no named shape
+       can cover the space the way four random coefficients do. Amplitudes are
+       kept summing under ~0.26 so the outline cannot fold through itself. */
+    case "harmonic": {
+      let k=1;
+      for(let i=0;i<S.harm.length;i++) k+=S.harm[i][0]*Math.cos((i+2)*a+S.harm[i][1]);
+      return k;
+    }
+    default:         return 1;                          // "round"
+  }
+}
+/* The outline. Also handed to clipTo as the region for any shading, so tone
+   stops at the real edge rather than at the underlying ellipse. */
+function outline(S,steps=64){
+  const pts=[];
+  for(let i=0;i<=steps;i++){
+    const a=i/steps*6.2832, k=shapeR(S,a);
+    pts.push(project(S,[S.rx*k*Math.cos(a), S.ry*k*Math.sin(a), 0]).slice(0,2));
+  }
+  return pts;
+}
+/* A point ON the outline at parameter angle `a` — so anything attached (an
+   ear, a brim, a horn) lands exactly on the edge whatever the head shape. */
+function silPt(S,a,rad=1){
+  const k=rad*shapeR(S,a);
+  return project(S,[S.rx*k*Math.cos(a),S.ry*k*Math.sin(a),0]).slice(0,2);
+}
+
+/* ── THE RULES LAYER ─────────────────────────────────────────────────────
+   Everything above this line will cheerfully draw a part in a stupid place.
+   This is what stops it. Three rules, applied before a part is inked:
+
+     R1  IN       a feature belongs on the face — clamp it inside the outline.
+     R2  OUT      a worn or attached thing (hair, hat, brim, ear) sits ON the
+                  form, so it is pushed OUT to the edge, never pulled in.
+     R3  OCCLUDE  a part whose surface normal has turned away is gone. Not
+                  faded, not squashed: gone. Hard turns hide things.
+
+   R1 and R2 are the same operation with the inequality flipped, and neither
+   needs a search. In the ellipse's own frame the outline is a circle scaled by
+   shapeR, so "how far out is this point, and where is the edge along that
+   direction" is one 2x2 solve plus one function call. It stays exact when the
+   head turns because the matrix IS the rotation, and exact when the head is a
+   pear because it asks shapeR the same question the outline did. */
+
+/* The 2x2 map carrying the unit circle to the projected ellipse. */
+function formBasis(S){
+  const a=[S.M[0][0]*S.rx, S.M[1][0]*S.rx];        // image of the +x radius
+  const b=[S.M[0][1]*S.ry, S.M[1][1]*S.ry];        // image of the +y radius
+  return {a,b,det:a[0]*b[1]-a[1]*b[0]};
+}
+/* mode "in" keeps the point inside `target`, "out" keeps it beyond, "on" pins
+   it exactly there. target is a fraction of the outline: 1 is the edge. */
+function toForm(S,x,y,target,mode="in"){
+  const {a,b,det}=formBasis(S);
+  if(Math.abs(det)<1e-9) return [x,y];
+  const u=( x*b[1]-y*b[0])/det, v=(-x*a[1]+y*a[0])/det;
+  const rho=Math.hypot(u,v);
+  if(rho<1e-6) return [x,y];
+  const t=target*shapeR(S,Math.atan2(v,u));
+  if(mode==="in"  && rho<=t) return [x,y];
+  if(mode==="out" && rho>=t) return [x,y];
+  const k=t/rho;
+  return [(a[0]*u+b[0]*v)*k, (a[1]*u+b[1]*v)*k];
+}
+/* R1 applied to every vertex of a shape. `pin` below moves a part's ORIGIN,
+   which is enough for a small mark but not for a big filled one — a bushy brow
+   or a toothbrush moustache could still spill over the outline with its anchor
+   safely inside. This clamps the footprint instead. */
+const clampPts=(S,pts,t)=>pts.map(q=>toForm(S,q[0],q[1],t,"in"));
+/* Pin an anchor to the form. Only WHERE it sits moves — its axes, depth and
+   facing are untouched, so the part still orients with the solid. */
+function pin(S,A,target,mode="in"){
+  const [x,y]=toForm(S,A.x,A.y,target,mode);
+  return {...A,x,y};
+}
+/* ── R4 SPACE: the layout pass ───────────────────────────────────────────
+   R1-R3 keep every part ON the form, but nothing stopped two parts landing on
+   top of each OTHER — the jitter that gives these faces their character was
+   also piling brows into eyes and moustaches into mouths.
+
+   The minimum separation is deliberately SOFT. A little interpenetration is
+   what a hand does and it reads fine; only the bad cases need fixing. So each
+   pair may overlap by up to `1 - TOUCH` of their combined half-heights before
+   the packer intervenes at all.
+
+   Work in projected y — units of S.ry, -1 at the crown and +1 at the chin —
+   rather than in the raw v parameter, because y is where "this far apart"
+   actually means something. v is compressed near the poles, so equal steps in
+   v are wildly unequal on the page. */
+const TOUCH=0.58;                     // 0 = anything goes, 1 = no contact at all
+const yOfV=v=>Math.sin(v*Math.PI/2);
+const vOfY=y=>Math.asin(Math.max(-0.999,Math.min(0.999,y)))*2/Math.PI;
+/* items are {y (centre), h (half-height)} top to bottom. Returns how much total
+   shoving was needed, which the gates use to reject the hopeless ones. */
+function packStack(items,lo,hi){
+  let squeeze=0;
+  for(let i=1;i<items.length;i++){
+    const a=items[i-1], b=items[i], need=(a.h+b.h)*TOUCH;
+    if(b.y-a.y<need){ squeeze+=need-(b.y-a.y); b.y=a.y+need; }
+  }
+  const last=items[items.length-1];
+  const over=(last.y+last.h)-hi;                 // ran off the chin
+  if(over>0) for(const it of items) it.y-=over;
+  const under=lo-(items[0].y-items[0].h);        // ...and now off the brow
+  if(under>0){
+    const span=last.y-items[0].y, room=(hi-lo)-(items[0].h+last.h);
+    if(span>1e-6){
+      const k=Math.max(0.30,Math.min(1,room/span));
+      squeeze+=(1-k)*span;
+      const y0=lo+items[0].h;
+      for(const it of items) it.y=y0+(it.y-items[0].y)*k;
+    }
+  }
+  return squeeze;
+}
+/* R3. Roles differ in how far round the form they survive: a feature faces
+   you, a worn thing wraps round, an edge thing lives on the rim by definition
+   and so vanishes once it swings to the front. */
+const ROLE={FEATURE:[0.10,1.01], WORN:[-0.55,1.01], EDGE:[-0.40,0.78]};
+const seen=(A,role)=>A.facing>role[0] && A.facing<role[1];
+
+/* ── one light for the whole sheet ───────────────────────────────────────
+   Forty specimens agreeing about where the sun is costs almost nothing, since
+   every subject already carries a real surface normal — "which side is in
+   shadow" is a dot product rather than a guess, and it swings correctly when
+   you drag Turn. Points FROM the surface TOWARD the light. */
+const LIGHT=(()=>{const v=[-0.50,-0.66,0.56], L=Math.hypot(...v);
+  return v.map(c=>c/L);})();
+const clampV=v=>Math.max(-0.999,Math.min(0.999,v));
+
+/* Hatch that lives ON the solid: both ends of every stroke are (u,v) surface
+   points that get projected. The flat hatch above was being handed raw solid
+   coordinates as if they were page coordinates, so hair and jaw tone slid
+   across the face on every rotation and never turned with the head at all.
+   `cut` keeps only strokes darker than that threshold, which is what lets the
+   shading find the shadow side by itself instead of being placed by hand. */
+function surfHatch(S,r,{u0=0,u1=1,v0=-1,v1=1,n=26,du=0.02,dv=0.12,len=1,
+                        w=1.0,alpha=0.6,cut=null,jit=0.35,col=INK}={}){
+  n=Math.max(4,Math.round(n*LOD()));
+  const rr=R(r);
+  for(let i=0;i<n;i++){
+    const u=rr(u0,u1), v=clampV(rr(v0,v1));
+    const nrm=mul(S.M,normalAt(S,u,v));
+    if(nrm[2]<0.06) continue;                                  // round the back
+    if(cut!==null && (nrm[0]*LIGHT[0]+nrm[1]*LIGHT[1]+nrm[2]*LIGHT[2])>cut) continue;
+    const k=len*(1-jit+rr(0,jit*2)), tw=1+(r()-0.5)*0.6;
+    const a=project(S,onSolid(S,u-du*k*tw*0.5, clampV(v-dv*k*0.5)));
+    const b=project(S,onSolid(S,u+du*k*tw*0.5, clampV(v+dv*k*0.5)));
+    stroke([[a[0],a[1]],[b[0],b[1]]],r,
+      {w,passes:1,alpha:alpha*(0.55+0.55*nrm[2]),amp:0.05,col});
+  }
+}
+
+/* ── caps: haircuts, beards, bibs ────────────────────────────────────────
+   Reference: Mannay's ink sheets. What carries those drawings is VALUE — a
+   solid black mass over the crown meeting a light face along one hard,
+   slightly ragged edge. So hair is a closed REGION on the solid, not a bundle
+   of strokes: an outline arc, then a boundary line drawn back across the face.
+   Both come from projected points, so the whole mass turns for free.
+
+   `dir` picks the hemisphere, which is the whole trick — a beard is a haircut
+   on the underside. `span` narrows it, `rad` lets it sit outside the skull
+   (hair has thickness), `drop` slides the boundary line up the face when
+   negative and down when positive in units of S.ry, `tilt` slants it. */
+function cap(S,{span=1,rad=1.06,drop=0,tilt=0,steps=44,dir=-1,
+                lobes=0,lobeAmp=0,lobePh=0,
+                bulge=0,bulgePh=0,lean=0}={}){
+  const up=dir<0;
+  const a0=(up?Math.PI:0)+(1-span)*Math.PI/2;
+  const a1=(up?2*Math.PI:Math.PI)-(1-span)*Math.PI/2;
+  const P=(x,y)=>project(S,[x,y,0]).slice(0,2), pts=[];
+  /* THE helmet fix. `rad` used to be a flat multiplier, which made the outer
+     edge of every haircut a perfectly scaled copy of the skull underneath —
+     that is the literal definition of a moulded helmet, and no amount of
+     texture inside it was ever going to fix that.
+
+     Real hair has its own profile: it sits thicker in some places than others,
+     and it piles up on one side of a parting. So the outer radius gets a couple
+     of lobes of its own plus a lean, and the silhouette stops echoing the
+     skull. */
+  const K=a=>{
+    const t=(a-a0)/(a1-a0);
+    const m=bulge*(Math.sin(t*6.283+bulgePh)*0.60
+                 + Math.sin(t*10.7+bulgePh*1.7)*0.40)
+          + lean*Math.cos(t*Math.PI);
+    // clamp the inward side: hair bulges OUT from the skull, it never tucks
+    // under it, and letting it do so collapsed the region to a bare outline
+    return rad*(1+Math.max(-0.04,m))*shapeR(S,a);
+  };
+  for(let i=0;i<=steps;i++){
+    const a=a0+(a1-a0)*i/steps, k=K(a);
+    pts.push(P(S.rx*k*Math.cos(a), S.ry*k*Math.sin(a)));
+  }
+  const k1=K(a1), k0=K(a0);
+  const x1=S.rx*k1*Math.cos(a1), x0=S.rx*k0*Math.cos(a0);
+  const y1=S.ry*k1*Math.sin(a1), y0=S.ry*k0*Math.sin(a0);
+  for(let i=0;i<=26;i++){
+    const t=i/26;
+    const x=x1+(x0-x1)*t, base=y1+(y0-y1)*t;
+    const sag=drop*S.ry*(1-(2*t-1)*(2*t-1));   // parabolic boundary line
+    const slant=tilt*S.ry*(t-0.5);             // side part
+    /* Clumps. The parabola alone gives a smooth moulded edge — the single
+       biggest reason the hair read as a helmet rather than as drawn. Real ink
+       hair breaks into a few wedges with CORNERS between them, which is
+       exactly what abs(sin) gives: cusps at the zeros, lobes between. */
+    const cl=lobes ? Math.abs(Math.sin(Math.PI*(t*lobes+lobePh)))*lobeAmp*S.ry : 0;
+    pts.push(P(x, base+sag+slant+cl));
+  }
+  return pts;
+}
+/* The clump parameters for one haircut. Rolled once, so the filled mass and
+   the re-inked hairline agree about where the wedges are. */
+const clumps=r=>({lobes:2+Math.floor(r()*3), lobeAmp:0.05+r()*0.10, lobePh:r(),
+                  bulge:0.055+r()*0.105, bulgePh:r()*6.283, lean:(r()-0.5)*0.20});
+/* Reads better than cap(S,{dir:-1,...}) at the hair call sites. */
+const crown=(S,o)=>cap(S,{...o,dir:-1});
+/* Ragged bottom edge: ink the boundary line again as an open stroke so it
+   reads as drawn rather than clipped. */
+function hairline(pts,r,w=2.2){
+  stroke(pts.slice(Math.floor(pts.length*0.62)),r,{w,amp:0.019,passes:2,over:0.012});
+}
+
+/* ── the feature vocabulary ──────────────────────────────────────────────
+   Small named part functions with many variants each. Granularity is the
+   point: an eye is two arcs plus a pupil, not "an eye". Everything takes a
+   colour, because a void cat's eyes are cut out of the black rather than
+   drawn on top of it.
+
+   Some of these are deliberately absurd. A sheet of forty wants a couple of
+   specimens with spirals for eyes. */
+
+/* These draw noticeably wider than `size` suggests, so they need elbow room. */
+const BIGEYES=new Set(["wide","boggle","ring","star","spiral","almond"]);
+const EYES=["open","open","open","open","dot","dot","wide","closed","sleepy",
+            "squint","almond","boggle","ring","cross","spiral","star","angry","pinhole"];
+function eye(A,r,side,{size=1,style="open",col=INK,tilt=0,lid=0}={}){
+  const rr=R(r);
+  const [x,y]=place(A,0,0);
+  // `lid` squashes the eye vertically — a blink, without changing the path
+  const w=size*(0.9+rr(0,0.25)), h=size*(0.62+rr(0,0.4))*(1-lid*0.93);
+
+  if(style==="dot"){ fillPts(arc(x,y,w*0.42,h*0.42,0,6.29,14,tilt),col); return; }
+  if(style==="pinhole"){ fillPts(arc(x,y,w*0.16,h*0.16,0,6.29,10),col); return; }
+  if(style==="closed"){ stroke(arc(x,y,w,h*0.5,3.34,6.08,12,tilt),r,{w:1.7,amp:0.028,col}); return; }
+  if(style==="sleepy"){                    // lid drawn low over a clipped pupil
+    stroke(arc(x,y,w,h,3.25,6.18,16,tilt),r,{w:1.9,amp:0.028,col});
+    stroke(arc(x,y,w*0.90,h*0.55,0.25,2.90,12,tilt),r,{w:1.3,alpha:0.75,amp:0.026,col});
+    fillPts(arc(x,y+h*0.16,w*0.30,h*0.24,3.15,6.29,12,tilt),col);
+    return;
+  }
+  if(style==="squint"){                    // two lines pinching toward each other
+    stroke([[x-w,y-h*0.10],[x+w,y+h*0.06]],r,{w:1.9,amp:0.06,col});
+    stroke([[x-w*0.88,y+h*0.42],[x+w*0.88,y+h*0.28]],r,{w:1.5,alpha:0.8,amp:0.06,col});
+    return;
+  }
+  if(style==="almond"){                    // a lens on its side, pupil as a slit
+    const p=[], ct=Math.cos(tilt), st=Math.sin(tilt);
+    const put=(dx,dy)=>p.push([x+dx*ct-dy*st, y+dx*st+dy*ct]);
+    for(let i=0;i<=14;i++){const t=-1+2*i/14; put(t*w*1.15,-h*0.72*(1-t*t));}
+    for(let i=14;i>=0;i--){const t=-1+2*i/14; put(t*w*1.15, h*0.72*(1-t*t));}
+    stroke(p,r,{w:1.8,close:true,amp:0.024,col});
+    fillPts(arc(x,y,w*0.20,h*0.58,0,6.29,16,tilt),col);
+    return;
+  }
+  if(style==="wide"){
+    stroke(arc(x,y,w*1.05,h*1.05,0,6.29,30,tilt),r,{w:1.8,amp:0.018,close:true,col});
+    fillPts(arc(x+rr(-0.12,0.12)*w,y+rr(-0.1,0.1)*h,w*0.34,h*0.34,0,6.29,14),col);
+    return;
+  }
+  if(style==="boggle"){                    // big rim, small pupil, wide awake
+    stroke(arc(x,y,w*1.38,h*1.38,0,6.29,32,tilt),r,{w:1.8,amp:0.016,close:true,col});
+    fillPts(arc(x+rr(-0.34,0.34)*w,y+rr(-0.24,0.24)*h,w*0.22,h*0.22,0,6.29,12),col);
+    return;
+  }
+  if(style==="ring"){                      // two rims, nothing in the middle
+    stroke(arc(x,y,w*1.15,h*1.15,0,6.29,30,tilt),r,{w:1.8,amp:0.016,close:true,col});
+    stroke(arc(x,y,w*0.52,h*0.52,0,6.29,20,tilt),r,{w:1.3,alpha:0.85,amp:0.03,close:true,col});
+    return;
+  }
+  if(style==="cross"){                     // naive X, cartoon shorthand
+    stroke([[x-w*0.72,y-h*0.72],[x+w*0.72,y+h*0.72]],r,{w:2.0,amp:0.07,col});
+    stroke([[x+w*0.72,y-h*0.72],[x-w*0.72,y+h*0.72]],r,{w:2.0,amp:0.07,col});
+    return;
+  }
+  if(style==="spiral"){                    // dizzy. absurd on purpose
+    const pts=[], turns=rr(2.0,2.9);
+    for(let i=40;i>=0;i--){const t=i/40, a=t*turns*6.283;
+      pts.push([x+Math.cos(a)*w*1.15*t, y+Math.sin(a)*h*1.15*t]);}
+    stroke(pts,r,{w:1.5,passes:1,amp:0.012,over:0,col});
+    return;
+  }
+  if(style==="star"){                      // five points, drawn badly, correctly
+    const pts=[];
+    for(let i=0;i<=10;i++){
+      const a=-Math.PI/2+i*Math.PI/5, k=(i%2)?0.44:1.15;
+      pts.push([x+Math.cos(a)*w*k, y+Math.sin(a)*h*k]);
+    }
+    fillPts(pts,col,0.92); stroke(pts,r,{w:1.2,close:true,amp:0.03,col});
+    return;
+  }
+  if(style==="angry"){                     // lid slammed down from the inside
+    stroke([[x-w*1.05,y-h*0.55],[x+w*0.95,y+h*0.10]],r,{w:2.1,amp:0.045,col});
+    stroke(arc(x,y+h*0.10,w*0.95,h*0.62,0.10,3.0,14),r,{w:1.7,amp:0.028,col});
+    fillPts(arc(x-w*0.10,y+h*0.10,w*0.26,h*0.26,0,6.29,12),col);
+    return;
+  }
+  // "open": upper lid arc + lower arc + pupil
+  stroke(arc(x,y,w,h,3.25,6.18,16,tilt),r,{w:1.9,amp:0.028,col});
+  stroke(arc(x,y,w*0.94,h*0.72,0.18,2.98,14,tilt),r,{w:1.4,alpha:0.8,amp:0.026,col});
+  fillPts(arc(x+rr(-0.18,0.18)*w,y-h*0.05,w*0.3,h*0.36,0,6.29,14,tilt),col);
+}
+
+/* ── brows ──────────────────────────────────────────────────────────────── */
+const BROWS=["arc","arc","arc","flat","angry","bushy","raised","worried","high"];
+function brow(A,r,side,{size=1,style="arc",col=INK,tilt=0,S=null}={}){
+  const rr=R(r);
+  if(style==="flat"){
+    stroke([place(A,-size,rr(-0.08,0.08)*size),place(A,size,rr(-0.08,0.08)*size)],
+      r,{w:1.9,amp:0.055,col}); return;
+  }
+  if(style==="angry"){                     // inner end driven down toward the nose
+    stroke([place(A,-side*size*0.95,-size*0.30),place(A,side*size*0.95,size*0.26)],
+      r,{w:2.2,amp:0.05,col}); return;
+  }
+  if(style==="worried"){                    // the opposite: inner end lifted
+    stroke([place(A,-side*size*0.95,size*0.24),place(A,side*size*0.95,-size*0.22)],
+      r,{w:1.9,amp:0.05,col}); return;
+  }
+  if(style==="bushy"){                      // a small filled mass, not a line
+    let p=[place(A,-size*0.92,size*0.12),place(A,-size*0.28,-size*0.32),
+           place(A,size*0.86,-size*0.06),place(A,size*0.80,size*0.26),
+           place(A,-size*0.84,size*0.34)];
+    if(S) p=clampPts(S,p,0.93);
+    fillPts(p,col,0.9); stroke(p,r,{w:1.3,close:true,amp:0.045,col}); return;
+  }
+  if(style==="raised"){                     // one side only — asymmetry on purpose
+    const lift=side>0?-size*0.40:0;
+    stroke(arc(...place(A,0,lift),size,size*0.30,3.3,6.1,10),r,{w:1.8,amp:0.026,col});
+    return;
+  }
+  if(style==="high"){
+    stroke(arc(...place(A,0,-size*0.55),size*0.9,size*0.34,3.3,6.1,10),r,{w:1.7,amp:0.03,col});
+    return;
+  }
+  stroke(arc(A.x,A.y,size,size*rr(0.20,0.50),3.3,6.1,10,tilt),r,{w:1.8,amp:0.026,col});
+}
+
+/* ── noses ───────────────────────────────────────────────────────────────
+   `size` is roughly the length of the thing. The original was only ever the
+   "hook": one long curve round a tip. */
+const NOSES=["hook","hook","hook","button","wide","snub","roman","blob",
+             "triangle","dots","bulb","none"];
+function nose(A,r,{size=1,style="hook",col=INK}={}){
+  const rr=R(r);
+  if(style==="none") return;
+  if(style==="dots"){
+    for(const s of [-1,1]) fillPts(arc(...place(A,s*size*0.20,size*0.35),
+      size*0.075,size*0.075,0,6.29,10),col,0.85);
+    return;
+  }
+  if(style==="button"){
+    const p=arc(...place(A,0,size*0.35),size*0.22,size*0.17,0,6.29,16);
+    fillPts(p,col,0.85); stroke(p,r,{w:1.4,close:true,amp:0.030,col}); return;
+  }
+  if(style==="bulb"){
+    const p=arc(...place(A,0,size*0.42),size*0.34,size*0.30,0,6.29,20);
+    stroke(p,r,{w:1.8,close:true,amp:0.034,col});
+    stroke([place(A,0,-size*0.35),place(A,-size*0.05,size*0.10)],r,{w:1.5,amp:0.04,col});
+    return;
+  }
+  if(style==="blob"){
+    const p=arc(...place(A,0,size*0.30),size*0.30,size*0.26,0,6.29,20);
+    stroke(p,r,{w:1.8,close:true,amp:0.038,col}); return;
+  }
+  if(style==="triangle"){
+    const p=[place(A,-size*0.26,size*0.42),place(A,size*0.26,size*0.42),place(A,0,-size*0.20)];
+    stroke(p,r,{w:1.7,close:true,amp:0.040,col}); return;
+  }
+  if(style==="wide"){
+    stroke([place(A,0,-size*0.40),place(A,0,size*0.50)],r,{w:1.8,amp:0.030,col});
+    stroke([place(A,-size*0.36,size*0.50),place(A,0,size*0.64),place(A,size*0.36,size*0.50)],
+      r,{w:1.8,amp:0.030,col});
+    return;
+  }
+  if(style==="snub"){
+    stroke([place(A,0,-size*0.22),place(A,-size*0.08,size*0.38),place(A,size*0.32,size*0.30)],
+      r,{w:1.9,amp:0.038,col}); return;
+  }
+  if(style==="roman"){                      // straight bridge with a bump in it
+    stroke([place(A,-size*0.08,-size*0.58),place(A,size*0.12,-size*0.06),
+            place(A,size*0.04,size*0.52),place(A,size*0.36,size*0.46)],
+      r,{w:1.9,amp:0.030,col}); return;
+  }
+  stroke([place(A,0,-size*0.45),place(A,0,size*0.85),place(A,size*0.46,size*0.97)],
+    r,{w:1.9,amp:0.030,col});
+}
+
+/* ── mouths ─────────────────────────────────────────────────────────────── */
+const MOUTHS=["line","line","line","frown","oh","teeth","smirk","grin","zigzag",
+              "pout","flat","tongue","scribble","gape"];
+function mouth(A,r,{w=1,style="line",col=INK,tilt=0,smile=0}={}){
+  const rr=R(r), [x,y]=[A.x,A.y];
+  if(style==="line"){ stroke(arc(x,y,w,w*(rr(0.12,0.4)+smile*0.55),0.2,2.94,14,tilt),r,{w:1.9,amp:0.030,col}); return; }
+  if(style==="frown"){ stroke(arc(x,y+w*0.5,w*0.9,w*Math.max(0.04,0.45-smile*0.42),3.4,6.02,14,tilt),r,{w:1.9,amp:0.030,col}); return; }
+  if(style==="flat"){ stroke([[x-w*0.8,y],[x+w*0.8,y]],r,{w:2.1,amp:0.016,col}); return; }
+  if(style==="smirk"){ stroke(arc(x+w*0.22,y,w*0.72,w*(0.34+smile*0.42),0.35,2.6,14,tilt),r,{w:1.9,amp:0.038,col}); return; }
+  // "oh" used to be a solid oval a fifth of the face wide, which read as a
+  // bruise. Smaller, and the dark is the throat inside a drawn rim.
+  // The dark in an open mouth is the THROAT — it sits low. Filling the whole
+  // oval at half alpha just made a grey smudge.
+  if(style==="oh"){ const p=arc(x,y,w*0.34,w*0.44,0,6.29,22);
+    fillPts(p,col,col===PAPER?0.85:0.16);
+    fillPts(arc(x,y+w*0.12,w*0.24,w*0.24,0,6.29,16),col,col===PAPER?0.9:0.80);
+    stroke(p,r,{w:1.8,close:true,amp:0.030,col}); return; }
+  if(style==="gape"){ const p=arc(x,y,w*0.60,w*0.70,0,6.29,24);
+    fillPts(p,col,col===PAPER?0.85:0.14);
+    fillPts(arc(x,y+w*0.20,w*0.40,w*0.34,0,6.29,18),col,col===PAPER?0.9:0.72);
+    stroke(p,r,{w:2.0,close:true,amp:0.034,col}); return; }
+  if(style==="pout"){ stroke(arc(x,y,w*0.42,w*0.30,0,6.29,18),r,{w:1.9,close:true,amp:0.034,col}); return; }
+  if(style==="grin"){
+    stroke(arc(x,y,w*1.08,w*(0.60+smile*0.38),0.12,3.02,18,tilt),r,{w:2.0,amp:0.028,col});
+    for(const s of [-1,1]) stroke([[x+s*w*1.06,y+w*0.03],[x+s*w*0.90,y-w*0.20]],
+      r,{w:1.4,passes:1,alpha:0.8,amp:0.05,col});
+    return;
+  }
+  if(style==="zigzag"){
+    const p=[]; for(let i=0;i<=6;i++) p.push([x-w+2*w*i/6, y+(i%2?w*0.22:-w*0.14)]);
+    stroke(p,r,{w:1.8,amp:0.018,col}); return;
+  }
+  if(style==="scribble"){                   // no mouth so much as an idea of one
+    const p=[]; for(let i=0;i<=22;i++){const t=i/22;
+      p.push([x-w*0.8+1.6*w*t, y+Math.sin(t*11+rr(0,1))*w*0.16]);}
+    stroke(p,r,{w:1.4,passes:1,alpha:0.85,amp:0.02,col}); return;
+  }
+  if(style==="tongue"){
+    stroke(arc(x,y,w,w*0.40,0.2,2.94,14,tilt),r,{w:1.9,amp:0.030,col});
+    const t=arc(x+w*0.18,y+w*0.28,w*0.26,w*0.30,0,3.15,12);
+    fillPts(t,TINTS[2],0.85); stroke(t,r,{w:1.2,passes:1,amp:0.026,col});
+    return;
+  }
+  if(style==="teeth"){
+    stroke(arc(x,y,w,w*0.5,0.1,3.04,16,tilt),r,{w:2,amp:0.028,col});
+    for(let i=-1;i<=1;i++) stroke([[x+i*w*0.34,y],[x+i*w*0.34,y+w*0.3]],
+      r,{w:1.1,passes:1,alpha:0.7,amp:0.020,col});
+    return;
+  }
+  stroke([[x-w,y],[x+w,y]],r,{w:2,amp:0.032,col});
+}
+
+/* ── ears (the human kind) ───────────────────────────────────────────────
+   R2. An ear is attached, so it lives ON the rim: toForm(...,"on") puts it
+   exactly there whatever the head shape. The old version centred a
+   half-ellipse on the (u,v) anchor, which left half of every ear drawn inside
+   the face — those were the loops that made these look like jugs. */
+const HEAR=["round","round","round","pointed","long","tiny","jug","none"];
+function drawEars(S,r,unit,style,J){
+  if(style==="none") return;
+  const rr=R(r);
+  for(const [i,s] of [[0,-1],[1,1]]){
+    const A=anchor(S,s*0.25,0.02+(J?J.earDV[i]:0));
+    if(!seen(A,ROLE.EDGE)) continue;
+    const b=toForm(S,A.x,A.y,1.0,"on");
+    const k=J?J.earK[i]:1;
+    let h=unit*rr(0.055,0.080)*k, wd=unit*rr(0.026,0.040)*k;
+    if(style==="long"){ h*=1.7; wd*=0.72; }
+    if(style==="tiny"){ h*=0.55; wd*=0.62; }
+    if(style==="jug"){  h*=1.1;  wd*=1.5;  }
+    let p=[];
+    if(style==="pointed"){                  // a little elf point, outward
+      p=[[b[0],b[1]-h*0.5],[b[0]+s*wd*1.5,b[1]-h*0.1],[b[0],b[1]+h*0.5]];
+    }else{
+      for(let i=0;i<=14;i++){const t=i/14;
+        p.push([b[0]+s*wd*Math.sin(t*Math.PI), b[1]+h*(t-0.5)]);}
+    }
+    fillPts(p,PAPER,0.95); stroke(p,r,{w:1.8,amp:0.030});
+    if(style!=="tiny")                      // inner fold
+      stroke([[b[0]+s*wd*0.30,b[1]-h*0.16],[b[0]+s*wd*0.58,b[1]],
+              [b[0]+s*wd*0.24,b[1]+h*0.20]],r,{w:1.1,passes:1,alpha:0.7,amp:0.045});
+  }
+}
+
+/* ── textures ────────────────────────────────────────────────────────────
+   Reference: the ink sheets. What carries those drawings is NOT line weight —
+   the outlines there are quite fine. It is that every enclosed region is FULL
+   of texture, and the value comes from how dense that field is. Hair is a
+   hatch, or a woven mesh, or a packed field of little curls.
+
+   So texture is its own axis here, independent of shape: any region can be
+   filled with any of these, and hair picks a shape and a texture separately.
+   That is where the variety comes from — twenty-two shapes times thirteen
+   textures beats naming a hundred haircuts.
+
+   Everything works in surface (u,v) coordinates and is projected, so the
+   texture is stuck to the form and turns with it. u is sampled all the way
+   round and the back-facing samples are dropped, which is what keeps a turned
+   head textured correctly instead of texturing the half that is facing away. */
+const surfPt=(S,u,v)=>project(S,onSolid(S,u,clampV(v))).slice(0,2);
+const faces=(S,u,v)=>mul(S.M,normalAt(S,u,clampV(v)))[2];
+
+/* Walk a surface path and ink only the front-facing runs, so one continuous
+   mark can cross the form without wrapping round the back. */
+function surfRuns(S,pts,r,opt){
+  let cur=[];
+  const flush=()=>{ if(cur.length>1) stroke(cur,r,opt); cur=[]; };
+  for(const [u,v] of pts){
+    if(faces(S,u,v)>0.06) cur.push(surfPt(S,u,v)); else flush();
+  }
+  flush();
+}
+
+const TEXTURES=["solid","solid","solid","solid","solid","solid","solid","solid",
+                "solid","comb","comb","comb","comb","dense","dense",
+                "crosshatch","crosshatch","curl","curl","scribble","scribble",
+                "stipple","wave","tuft","spikes",
+                "pencil","pencil","shade","shade","tooth",
+                "charcoal","charcoal","smear"];
+
+/* Fill a region with one of them. The caller clips to the region first, so
+   these can spill generously and let the clip cut the edge — which is exactly
+   how the hard hairline edge in the reference gets made. */
+function texture(kind,S,r,unit,{v0=-0.99,v1=0.25,dens=1,col=INK,alpha=1}={}){
+  dens*=LOD();
+  const rr=R(r), U0=-0.5, U1=0.5;
+  const D=(v1-v0);
+
+  if(kind==="comb"||kind==="dense"){
+    // Unidirectional combing that follows the longitudes. The reference does
+    // this far more than it cross-hatches: hair reads as combed, not woven.
+    const n=Math.round((kind==="dense"?76:44)*dens);
+    for(let i=0;i<n;i++){
+      const u=rr(U0,U1), v=rr(v0,v1);
+      if(faces(S,u,v)<0.06) continue;
+      const L=D*rr(0.30,0.85);
+      surfRuns(S,[[u-0.006,v-L/2],[u,v],[u+0.006,v+L/2]],r,
+        {w:rr(0.85,1.30),alpha:(kind==="dense"?0.95:0.82)*alpha,amp:0.02,col});
+    }
+    return;
+  }
+  if(kind==="crosshatch"){
+    // Loose, and jittered per stroke. Fixed du/dv made a regular lattice that
+    // read as a hairnet instead of as hatching.
+    const base=r()<0.5?1:-1;
+    for(const sgn of [base,-base])
+      for(let i=0;i<Math.round(26*dens);i++){
+        const u=rr(U0,U1), v=rr(v0,v1);
+        if(faces(S,u,v)<0.06) continue;
+        const du=sgn*rr(0.016,0.044), dv=rr(0.05,0.16);
+        surfRuns(S,[[u-du,v-dv],[u+du,v+dv]],r,
+          {w:rr(0.75,1.15),alpha:0.72*alpha,amp:0.035,col});
+      }
+    return;
+  }
+  if(kind==="mesh"){
+    // A woven grid: knit hats, and the cross-hatched caps in the reference.
+    for(let i=0;i<Math.round(9*dens);i++){
+      const v=v0+D*(i+0.5+rr(-0.28,0.28))/Math.round(9*dens), row=[];
+      for(let k=0;k<=40;k++) row.push([U0+(U1-U0)*k/40, v]);
+      surfRuns(S,row,r,{w:0.95,alpha:0.72*alpha,amp:0.012,col});
+    }
+    for(let i=0;i<Math.round(16*dens);i++){
+      const u=U0+(U1-U0)*(i+0.5+rr(-0.3,0.3))/Math.round(16*dens), colm=[];
+      for(let k=0;k<=12;k++) colm.push([u, v0+D*k/12]);
+      surfRuns(S,colm,r,{w:0.95,alpha:0.72*alpha,amp:0.012,col});
+    }
+    return;
+  }
+  if(kind==="wave"){
+    for(let i=0;i<Math.round(8*dens);i++){
+      const v=v0+D*(i+0.6)/Math.round(8*dens), ph=r()*6.28, row=[];
+      for(let k=0;k<=40;k++){
+        const t=k/40;
+        row.push([U0+(U1-U0)*t, v+Math.sin(t*7+ph)*D*0.055]);
+      }
+      surfRuns(S,row,r,{w:rr(0.95,1.40),alpha:0.84*alpha,amp:0.010,col});
+    }
+    return;
+  }
+  if(kind==="scribble"){
+    // A single continuous mark snaking across the region. This is the one that
+    // actually reads as SCRIBBLE rather than as hatching — the turns at the
+    // ends of each sweep are the whole character of it.
+    const rows=Math.round(rr(9,15)*dens), path=[];
+    for(let i=0;i<=rows;i++){
+      const v=v0+D*i/rows, back=i%2===1;
+      for(let k=0;k<=9;k++){
+        const t=k/9, u=back? U1-(U1-U0)*t : U0+(U1-U0)*t;
+        path.push([u, v+D/rows*t*0.95]);
+      }
+    }
+    surfRuns(S,path,r,{w:rr(0.95,1.35),alpha:0.86*alpha,amp:0.004,over:0,col});
+    return;
+  }
+  if(kind==="curl"){
+    // Packed little loops. The reference draws curly hair as a dense field of
+    // overlapping e-shapes, never as wavy lines.
+    const n=Math.round(36*dens);
+    for(let i=0;i<n;i++){
+      const u=rr(U0,U1), v=rr(v0,v1);
+      if(faces(S,u,v)<0.06) continue;
+      const q=surfPt(S,u,v), rad=unit*rr(0.016,0.030);
+      const a0=rr(0,6.28);
+      stroke(arc(q[0],q[1],rad,rad*rr(0.7,1.1),a0,a0+rr(4.6,6.6),14),
+        r,{w:rr(1.0,1.5),alpha:0.95*alpha,amp:0.05,col});
+    }
+    return;
+  }
+  if(kind==="pencil"||kind==="shade"||kind==="tooth"||
+     kind==="charcoal"||kind==="smear"){
+    // Tone rather than line, but built from marks. See pencilShade for why the
+    // stroke direction is fixed in page space while the positions follow the
+    // surface.
+    pencilShade(S,r,unit,col,{v0,v1,alpha,dens,medium:kind});
+    return;
+  }
+  if(kind==="stipple"){
+    const n=Math.round(170*dens);
+    for(let i=0;i<n;i++){
+      const u=rr(U0,U1), v=rr(v0,v1);
+      if(faces(S,u,v)<0.06) continue;
+      const q=surfPt(S,u,v), rad=unit*rr(0.0035,0.0075);
+      fillPts(arc(q[0],q[1],rad,rad,0,6.29,7),col,rr(0.45,0.85)*alpha);
+    }
+    return;
+  }
+  if(kind==="tuft"){
+    // Short flicks all leaning the same way — the "brushed" look.
+    const n=Math.round(46*dens), lean=rr(-1,1);
+    for(let i=0;i<n;i++){
+      const u=rr(U0,U1), v=rr(v0,v1);
+      if(faces(S,u,v)<0.06) continue;
+      surfRuns(S,[[u,v],[u+0.018*lean, v-D*rr(0.10,0.24)]],r,
+        {w:rr(0.9,1.40),alpha:0.90*alpha,amp:0.04,col});
+    }
+    return;
+  }
+  if(kind==="spikes"){
+    const n=Math.round(20*dens);
+    for(let i=0;i<n;i++){
+      const u=rr(U0,U1), v=rr(v0,Math.min(v1,v0+D*0.45));
+      if(faces(S,u,v)<0.06) continue;
+      surfRuns(S,[[u,v],[u+rr(-0.02,0.02), v-D*rr(0.25,0.55)]],r,
+        {w:rr(0.9,1.5),alpha:0.85*alpha,amp:0.05,col});
+    }
+    return;
+  }
+}
+
+/* ── escaping hairs ─────────────────────────────────────────────────────
+   The detail that stops a solid black mass reading as a moulded helmet: in the
+   reference almost every filled haircut has a few stray hairs poking out of its
+   top edge. Cheap, and it does more than any amount of interior texture.
+
+   The outward direction is found by testing against the cell origin, which is
+   the form's centre — safer than trusting the winding of a projected path. */
+function furEdge(S,r,unit,pts,{n=14,len=0.030,w=1.1,col=INK,upTo=0.58}={}){
+  const rr=R(r), lim=Math.max(3,Math.floor(pts.length*upTo));
+  // Clustered, not uniform: hairs escape in twos and threes from the same
+  // place. Sprinkling them evenly produced a halo of ticks on every crown.
+  const idx=[];
+  while(idx.length<n){
+    const k0=1+Math.floor(rr(0,Math.max(1,lim-2)));
+    const run=1+Math.floor(rr(0,3.2));
+    for(let j=0;j<run && idx.length<n;j++) idx.push(Math.min(lim-1,k0+j));
+  }
+  for(const k of idx){
+    const a=pts[k-1]||pts[k], b=pts[k], c=pts[k+1]||b;
+    let nx=(c[1]-a[1]), ny=-(c[0]-a[0]);
+    const M=Math.hypot(nx,ny)||1; nx/=M; ny/=M;
+    const L=unit*len*rr(0.45,1.6);
+    if(Math.hypot(b[0]+nx*L,b[1]+ny*L)<Math.hypot(b[0],b[1])){ nx=-nx; ny=-ny; }
+    stroke([b,[b[0]+nx*L,b[1]+ny*L]],r,
+      {w:w*rr(0.75,1.25),alpha:rr(0.7,1.0),amp:0.05,col});
+  }
+}
+/* ── hair ────────────────────────────────────────────────────────────────
+   Two independent choices: a SHAPE (where the hair sits on the skull) and a
+   TEXTURE (what it is made of). Bundling them was the mistake before — it made
+   "hatchtop" and "bowl" different haircuts when they are the same haircut in
+   two materials. Split, twenty-two shapes times nineteen texture picks covers
+   far more ground than naming a hundred styles ever would.
+
+   `hairDrop` — the hairline, in units of S.ry, negative being up the face —
+   lives on the SPEC, so the gates can read the number the drawing uses. */
+/* Hair needs texture with BODY. The general pool contains light ones — stipple,
+   tooth, wave — that are right for skin and read as an empty outline on a
+   haircut, which is most of why some heads looked bald with a line drawn on. */
+const HAIRTEX=["solid","solid","solid","solid","solid","solid","comb","comb",
+               "comb","dense","dense","shade","shade","charcoal","charcoal",
+               "pencil","crosshatch","scribble","curl","tuft","smear"];
+const HAIRSHAPES=["bowl","bowl","bowl","bowl","sweep","sweep","sweep","fringe",
+                  "fringe","quiff","cap","cap","cap","long","long","band",
+                  "beanie","beanie","flatcap","flatcap","tophat","combover",
+                  "topknot","pigtails","afro","spiky","curly","mohawk","wild",
+                  "bald","bald","cowlick"];
+/* Shapes that enclose a region, and can therefore take any texture. The rest
+   are made of strokes and ignore the texture axis entirely. */
+const REGION=new Set(["bowl","sweep","fringe","quiff","cap","long","band",
+                      "beanie","flatcap","tophat","combover","topknot","pigtails"]);
+const SHAPEINK={bald:0,cowlick:0,spiky:1,wild:1,mohawk:1,band:1,cap:1,afro:2,
+                curly:2,fringe:2,bowl:2,sweep:2,quiff:2,beanie:2,flatcap:2,
+                combover:2,topknot:2,pigtails:2,long:3,tophat:3};
+const TEXINK={solid:3,dense:3,crosshatch:2,mesh:2,comb:2,scribble:2,wave:1,
+              curl:1,stipple:1,spikes:1,tuft:1,pencil:2,shade:2,tooth:1,
+              charcoal:3,smear:2};
+const hairInk=g=>SHAPEINK[g.hair]+(REGION.has(g.hair)?TEXINK[g.hairTex]:0);
+/* Which shapes put solid black over the brow — the contrast gate needs to know. */
+const MASS=new Set(["bowl","sweep","fringe","quiff","long","flatcap","combover",
+                    "tophat","topknot","pigtails"]);
+
+/* Ink a hair region: solid black, or paper plus a texture field — and the stray
+   hairs off the top edge either way, which is what stops a filled haircut
+   reading as a moulded helmet. */
+function inkRegion(S,r,unit,m,tex,{fur=1,edge=2.5,ragged=true,dens=1}={}){
+  if(tex==="solid"){
+    if(DRY.has(tool)){
+      // A charcoal drawing has no flat blacks in it. Build the mass out of the
+      // same medium as everything else in this specimen.
+      fillPts(m,PAPER);
+      clipTo(m,()=>pencilShade(S,r,unit,INK,{dens:1.7,alpha:1.35,
+        medium:tool==="pencil"?"pencil":tool==="crayon"?"smear":"charcoal"}));
+    } else fillPts(m,INK);
+    stroke(m,r,{w:edge,amp:0.016,close:true});
+  }else{
+    fillPts(m,PAPER); stroke(m,r,{w:edge*0.86,amp:0.016,close:true});
+    clipTo(m,()=>texture(tex,S,r,unit,{dens}));
+  }
+  if(ragged) hairline(m,r,edge*0.82);
+  if(fur>0.02) furEdge(S,r,unit,m,{n:Math.round(6*fur+r()*6),
+    len:0.017+0.011*fur, w:1.0});
+}
+
+function drawHair(g,S,r,unit){
+  const kind=g.hair, tex=g.hairTex, rr=R(r), P=crown;
+  // the bounce lags the head (see drawCell), which is what reads as weight
+  const dh=g.hairDrop+anim.hair*0.022;
+  const fx=g.strays?1:0;                          // whether hairs escape at all
+  const cl=clumps(r);
+
+  if(kind==="bald"){
+    if(rr(0,1)<0.45){ const A=anchor(S,0,-0.9);   // two apologetic strands
+      for(let i=-1;i<=1;i+=2) stroke([place(A,i*unit*0.03,0),place(A,i*unit*0.05,-unit*0.05)],
+        r,{w:1.2,alpha:0.7,amp:0.05}); }
+    return;
+  }
+  if(kind==="cowlick"){                           // bald plus one sprout
+    const A=anchor(S,0,-0.95);
+    stroke([place(A,0,0),place(A,unit*0.02,-unit*0.07),
+            place(A,-unit*0.03,-unit*0.11),place(A,unit*0.045,-unit*0.16)],
+      r,{w:1.8,amp:0.07});
+    if(r()<0.6) stroke([place(A,-unit*0.02,0),place(A,-unit*0.065,-unit*0.065)],
+      r,{w:1.4,alpha:0.8,amp:0.07});
+    return;
+  }
+  if(kind==="bowl"||kind==="sweep"||kind==="fringe"||kind==="quiff"||kind==="cap"){
+    // one family: the same region, sitting higher or lower and leaning or not
+    const tilt=kind==="sweep"?(g.hairTilt<0?-1:1)*rr(0.35,0.75):g.hairTilt;
+    const lift=kind==="cap"?-rr(0.03,0.10):(kind==="fringe"?rr(0.05,0.13):0);
+    const m=P(S,{span:1,rad:rr(1.06,1.17),drop:dh+lift,tilt,
+                 ...cl, lobeAmp:cl.lobeAmp*(kind==="fringe"?1.3:1)});
+    inkRegion(S,r,unit,m,tex,{fur:fx*(kind==="cap"?0.5:1)});
+    if(kind==="quiff"){                           // a lobe lifting at the front
+      const A=anchor(S,0,-0.82);
+      const q=[place(A,-unit*0.09,unit*0.01),place(A,-unit*0.02,-unit*rr(0.10,0.20)),
+               place(A,unit*0.07,-unit*rr(0.04,0.13)),place(A,unit*0.10,unit*0.02)];
+      if(tex==="solid") fillPts(q,INK); else fillPts(q,PAPER);
+      stroke(q,r,{w:1.9,amp:0.035,close:true});
+      if(tex!=="solid") clipTo(q,()=>pencilShadeBox(q,r,unit,INK,{dens:1.5}));
+    }
+    return;
+  }
+  if(kind==="combover"){                          // mass, plus combing over it
+    const sd=g.hairTilt<0?-1:1;
+    const m=P(S,{span:1,rad:rr(1.03,1.07),drop:dh+rr(0.08,0.20),
+                 tilt:sd*rr(0.55,0.95),...cl});
+    inkRegion(S,r,unit,m,tex,{fur:fx*0.6});
+    if(tex==="solid")                             // paper-coloured comb lines
+      clipTo(m,()=>texture("wave",S,r,unit,{v0:-0.98,v1:0.10,dens:0.7,col:PAPER}));
+    return;
+  }
+  if(kind==="topknot"){
+    const m=P(S,{span:1,rad:rr(1.05,1.14),drop:dh,...cl});
+    inkRegion(S,r,unit,m,tex,{fur:fx*0.7});
+    const t=anchor(S,0,-1.0);
+    const p=arc(...place(t,rr(-0.03,0.03)*unit,-unit*rr(0.05,0.085)),
+                unit*rr(0.048,0.075),unit*rr(0.042,0.065),0,6.29,20);
+    if(tex==="solid") fillPts(p,INK,0.95); else { fillPts(p,PAPER);
+      clipTo(p,()=>pencilShadeBox(p,r,unit,INK,{dens:1.6})); }
+    stroke(p,r,{w:1.9,close:true,amp:0.022});
+    return;
+  }
+  if(kind==="pigtails"){
+    const m=P(S,{span:1,rad:rr(1.05,1.14),drop:dh,tilt:rr(-0.08,0.08),...cl});
+    inkRegion(S,r,unit,m,tex,{fur:fx*0.8});
+    for(const s of [-1,1]){
+      const b=silPt(S, s<0?Math.PI+0.35:-0.35, 1.02);
+      const p=arc(b[0]+s*unit*0.055,b[1]+unit*0.02,
+                  unit*rr(0.042,0.062),unit*rr(0.050,0.078),0,6.29,20);
+      if(tex==="solid") fillPts(p,INK,0.94); else { fillPts(p,PAPER);
+        clipTo(p,()=>pencilShadeBox(p,r,unit,INK,{dens:1.6})); }
+      stroke(p,r,{w:1.9,close:true,amp:0.024});
+    }
+    return;
+  }
+  if(kind==="band"){                              // hatched cap, dark band at the hairline
+    const m=P(S,{span:1,rad:rr(1.06,1.14),drop:dh,...cl});
+    fillPts(m,PAPER); stroke(m,r,{w:2.2,amp:0.016,close:true});
+    clipTo(m,()=>texture(tex==="solid"?"comb":tex,S,r,unit,{dens:1.1}));
+    const top=P(S,{span:1,rad:rr(1.04,1.08),drop:dh-rr(0.20,0.30)});
+    fillPts(m.concat(top.slice().reverse()),INK,0.97);
+    stroke(top,r,{w:1.8,amp:0.020});
+    hairline(m,r,2.0);
+    if(fx) furEdge(S,r,unit,m,{n:Math.round(rr(6,13)),len:0.030});
+    return;
+  }
+  if(kind==="beanie"){
+    const m=P(S,{span:1,rad:rr(1.07,1.12),drop:dh});
+    // a knit hat wants a woven texture, so bias it there
+    const kt=(tex==="solid"||tex==="curl"||tex==="stipple")?tex:"mesh";
+    if(kt==="solid"){ fillPts(m,INK); stroke(m,r,{w:2.5,amp:0.016,close:true}); }
+    else { fillPts(m,PAPER); stroke(m,r,{w:2.5,amp:0.016,close:true});
+           clipTo(m,()=>texture(kt,S,r,unit,{dens:1.1})); }
+    const cuff=P(S,{span:1,rad:rr(1.05,1.09),drop:dh+rr(0.06,0.14)});
+    const cin =P(S,{span:1,rad:1.02,          drop:dh-rr(0.06,0.12)});
+    fillPts(cuff.concat(cin.slice().reverse()),INK,0.93);
+    if(rr(0,1)<0.4){ const t=anchor(S,0,-1.02);   // bobble
+      fillPts(arc(...place(t,0,-unit*0.02),unit*0.028,unit*0.028,0,6.29,14),INK); }
+    return;
+  }
+  if(kind==="flatcap"){
+    const m=P(S,{span:1,rad:rr(1.07,1.13),drop:dh,tilt:rr(0.1,0.35),...cl});
+    inkRegion(S,r,unit,m,tex,{fur:fx*0.3,edge:2.6,ragged:false});
+    // R2: a brim is worn, so it is pushed OUT onto the rim, never clamped in
+    const b=pin(S,anchor(S,0.045,-0.30),1.0,"out");
+    stroke([place(b,-unit*0.02,0),place(b,unit*0.20,unit*0.035),place(b,unit*0.03,unit*0.03)],
+      r,{w:2.4,amp:0.04});
+    return;
+  }
+  if(kind==="tophat"){
+    const A=anchor(S,0,-0.98);
+    const hh=unit*rr(0.08,0.13), hw=unit*rr(0.100,0.126);
+    const box=[place(A,-hw,unit*0.01),place(A,-hw*0.93,-hh),
+               place(A,hw*0.93,-hh),place(A,hw,unit*0.01)];
+    if(tex==="solid"){ fillPts(box,INK,0.96); }
+    else { fillPts(box,PAPER);
+           clipTo(box,()=>pencilShadeBox(box,r,unit,INK,{dens:2.2})); }
+    stroke(box,r,{w:2.4,close:true,amp:0.014});
+    if(r()<0.55) stroke([place(A,-hw*0.97,-hh*0.20),place(A,hw*0.97,-hh*0.20)],
+      r,{w:3.2,alpha:0.9,amp:0.02,col:tex==="solid"?PAPER:INK});
+    const brim=P(S,{span:1,rad:rr(1.16,1.28),drop:dh-rr(0.02,0.12)});
+    fillPts(brim,INK,0.9); stroke(brim,r,{w:2.4,amp:0.016,close:true});
+    return;
+  }
+  if(kind==="long"){
+    const m=P(S,{span:1,rad:rr(1.06,1.16),drop:dh,tilt:rr(-0.2,0.2),...cl});
+    inkRegion(S,r,unit,m,tex,{fur:fx*1.1});
+    for(const sd of [-1,1]){                      // curtains down past the jaw
+      const pts=[];
+      for(let i=0;i<=14;i++){
+        const t=i/14, a=Math.PI*(sd<0?1.03:1.97)+sd*t*0.42;
+        const q=project(S,[S.rx*(1.05-0.14*t*t)*Math.cos(a),
+                           S.ry*1.05*Math.sin(a)+t*t*S.ry*rr(0.55,0.95),0]);
+        pts.push([q[0],q[1]]);
+      }
+      const back=pts.map((q,i)=>[q[0]+sd*unit*0.038*(i/pts.length),q[1]]);
+      const band=pts.concat(back.slice().reverse());
+      if(tex==="solid") fillPts(band,INK,0.9);
+      else { fillPts(band,PAPER,0.9);
+             clipTo(band,()=>texture(tex,S,r,unit,{v0:-0.2,v1:1.0,dens:1.2})); }
+      stroke(pts,r,{w:2.3,amp:0.020});
+    }
+    return;
+  }
+  if(kind==="curly"){                             // loops round the crown
+    const n=Math.round(rr(14,24));
+    for(let i=0;i<n;i++){
+      const a=Math.PI+(i+0.5)/n*Math.PI+rr(-0.06,0.06);
+      const q=silPt(S,a,rr(1.02,1.10));
+      const a0=rr(0,6.28);
+      stroke(arc(q[0],q[1],unit*rr(0.022,0.040),unit*rr(0.022,0.040),a0,a0+rr(5.0,6.6),16),
+        r,{w:rr(1.1,1.6),alpha:0.9,amp:0.05});
+    }
+    const m=P(S,{span:1,rad:1.0,drop:dh});
+    clipTo(m,()=>texture("curl",S,r,unit,{dens:1.5}));
+    return;
+  }
+  if(kind==="afro"){
+    const rad=rr(1.12,1.26);
+    const m=P(S,{span:1,rad:rad*0.96,drop:dh});
+    clipTo(m,()=>texture(tex==="solid"?"curl":tex,S,r,unit,{dens:1.5}));
+    const n=Math.round(rr(18,28));
+    for(let i=0;i<n;i++){
+      const a=Math.PI+(i+0.5)/n*Math.PI+rr(-0.06,0.06);
+      const q=silPt(S,a,rad*rr(0.90,1.05));
+      stroke(arc(q[0],q[1],unit*rr(0.028,0.050),unit*rr(0.028,0.050),0,6.29,16),
+        r,{w:rr(1.1,1.6),alpha:0.9,amp:0.05,close:true});
+    }
+    return;
+  }
+  if(kind==="spiky"||kind==="wild"){
+    // A base layer first: bare spikes on a blank skull read as a handful of
+    // stray hairs, not as a haircut. The reference always has tone underneath.
+    const wildly=kind==="wild";
+    const m=P(S,{span:1,rad:1.0,drop:dh+rr(0.02,0.14)});
+    clipTo(m,()=>texture(tex==="solid"?"tuft":tex,S,r,unit,
+      {dens:wildly?0.8:1.15, alpha:0.8}));
+    const n=Math.round(wildly?rr(32,48):rr(28,44));
+    for(let i=0;i<n;i++){
+      const a=Math.PI+(i+0.5)/n*Math.PI+rr(-0.05,0.05);
+      stroke([silPt(S,a,wildly?0.97:0.99),
+              silPt(S,a+rr(-0.16,0.16)*(wildly?1.3:1), wildly?rr(1.10,1.32):rr(1.05,1.19))],
+        r,{w:rr(1.1,1.7),alpha:0.92,amp:wildly?0.11:0.06});
+    }
+    return;
+  }
+  if(kind==="mohawk"){
+    const base=P(S,{span:1,rad:1.0,drop:dh+rr(0.06,0.18)});
+    clipTo(base,()=>texture("stipple",S,r,unit,{dens:0.7,alpha:0.6}));
+    // The crest lives in the solid's sagittal plane (x = 0), so it is edge-on
+    // from the front and broadside from the side — which is what a real one
+    // does. Drawn as spikes rather than a blade, or a front view is a line.
+    const n=Math.round(rr(10,16));
+    for(let i=0;i<n;i++){
+      const t=0.14+0.72*(i+0.5)/n, th=Math.PI*t, jx=rr(-0.09,0.09)*S.rx;
+      const b=project(S,[jx,-S.ry*Math.sin(th),S.rz*Math.cos(th)]);
+      const o=project(S,[jx,-S.ry*rr(1.16,1.34)*Math.sin(th),S.rz*rr(1.02,1.14)*Math.cos(th)]);
+      stroke([[b[0],b[1]],[o[0],o[1]]],r,{w:rr(1.8,2.5),alpha:0.95,amp:0.05});
+    }
+    return;
+  }
+}
+
+/* ── facial hair ─────────────────────────────────────────────────────────
+   `moustache` and `stubble` were being generated by the spec and then thrown
+   away — never drawn once. This is them. `cap(dir:1)` is the haircut
+   machinery run on the lower hemisphere, which is all a beard is. */
+const BEARDS=["none","none","none","none","none","stubble","stubble","full",
+              "goatee","goatee","sideburns","soulpatch","chinstrap"];
+const BEARDINK={none:0,stubble:1,soulpatch:0,sideburns:1,goatee:1,chinstrap:2,full:3};
+function drawBeard(g,S,r,unit){
+  const kind=g.beard, tex=g.beardTex, rr=R(r);
+  if(kind==="none") return;
+  if(kind==="stubble"){
+    // no mass at all, just tooth on the jaw — precisely the case that needed
+    // surface-space hatching, since a flat hatch slid off the chin on every turn
+    surfHatch(S,r,{v0:0.16,v1:0.88,n:74,du:0.004,dv:0.030,w:0.9,alpha:0.46,jit:0.55});
+    return;
+  }
+  if(kind==="full"){
+    const m=cap(S,{dir:1,span:1,rad:rr(1.02,1.07),drop:rr(0.02,0.24),
+                   tilt:rr(-0.12,0.12),...clumps(r)});
+    if(tex==="solid"){ fillPts(m,INK); stroke(m,r,{w:2.45,amp:0.016,close:true}); }
+    else { fillPts(m,PAPER); stroke(m,r,{w:2.15,amp:0.016,close:true});
+           clipTo(m,()=>texture(tex,S,r,unit,{v0:-0.10,v1:1.0,dens:1.25})); }
+    hairline(m,r);
+    furEdge(S,r,unit,m,{n:Math.round(rr(4,11)),len:0.024,upTo:0.55});
+    return;
+  }
+  if(kind==="chinstrap"){                          // a band following the jaw rim
+    const d=rr(-0.14,0.04);
+    const out=cap(S,{dir:1,span:1,rad:rr(1.02,1.05),drop:d});
+    const inn=cap(S,{dir:1,span:1,rad:rr(0.82,0.88),drop:d});
+    fillPts(out.concat(inn.slice().reverse()),INK,0.9);
+    stroke(out,r,{w:1.9,amp:0.016,close:true});
+    return;
+  }
+  if(kind==="goatee"){                             // chin patch, clear of the mouth
+    const m=cap(S,{dir:1,span:rr(0.34,0.50),rad:rr(1.02,1.06),
+                   drop:rr(-0.24,-0.10),...clumps(r)});
+    if(tex==="solid") fillPts(m,INK,0.96);
+    else { fillPts(m,PAPER); clipTo(m,()=>texture(tex,S,r,unit,{v0:0.3,v1:1.0,dens:1.6})); }
+    stroke(m,r,{w:2.15,amp:0.018,close:true});
+    return;
+  }
+  if(kind==="soulpatch"){
+    const A=pin(S,anchor(S,0,0.52),0.72);
+    const p=clampPts(S,[place(A,-unit*0.022,-unit*0.020),place(A,unit*0.022,-unit*0.020),
+                        place(A,unit*0.016,unit*0.030),place(A,-unit*0.016,unit*0.030)],0.90);
+    fillPts(p,INK,0.93); stroke(p,r,{w:1.2,close:true,amp:0.04});
+    return;
+  }
+  if(kind==="sideburns"){
+    for(const s of [-1,1]){
+      const A=anchor(S,s*0.235,-0.04);
+      if(!seen(A,ROLE.EDGE)) continue;
+      const B=pin(S,A,0.94);
+      const p=[place(B,s*unit*0.010,-unit*0.030),place(B,s*unit*0.050,-unit*0.016),
+               place(B,s*unit*0.044,unit*0.075),place(B,s*unit*0.004,unit*0.058)];
+      fillPts(p,INK,0.92); stroke(p,r,{w:1.4,close:true,amp:0.035});
+    }
+    return;
+  }
+}
+const MOUSTACHES=["none","none","none","none","none","none","walrus","pencil",
+                  "toothbrush","horseshoe","handlebar"];
+function drawMoustache(g,S,r,unit){
+  const kind=g.moustache;
+  if(kind==="none") return;
+  const rr=R(r), A0=anchor(S,0,g.mousV);
+  if(!seen(A0,ROLE.FEATURE)) return;
+  const A=pin(S,A0,0.56);                          // R1: keep it on the face
+  const w=unit*rr(0.052,0.084), h=unit*rr(0.010,0.020);
+  if(kind==="toothbrush"){
+    const p=clampPts(S,[place(A,-w*0.30,-h),place(A,w*0.30,-h),
+                        place(A,w*0.30,h),place(A,-w*0.30,h)],0.90);
+    fillPts(p,INK,0.95); stroke(p,r,{w:1.4,close:true,amp:0.035}); return;
+  }
+  if(kind==="pencil"){
+    for(const s of [-1,1])
+      stroke([place(A,s*w*0.10,0),place(A,s*w,-h*0.30)],r,{w:2.2,amp:0.045,alpha:0.95});
+    return;
+  }
+  if(kind==="handlebar"){                          // curls UP at the ends
+    for(const s of [-1,1]){
+      const p=[place(A,s*w*0.06,h*0.2),place(A,s*w*0.62,h*0.5),
+               place(A,s*w*1.02,-h*0.3),place(A,s*w*0.80,-h*1.5)];
+      stroke(p,r,{w:2.2,amp:0.05,alpha:0.95});
+    }
+    return;
+  }
+  // walrus / horseshoe: a lens that droops, heavier toward the ends
+  const droop=kind==="horseshoe"?rr(1.4,2.2):rr(0.4,0.9);
+  const p=[];
+  for(let i=0;i<=12;i++){const t=-1+2*i/12; p.push(place(A,t*w,-h*(1-t*t)*0.9));}
+  for(let i=12;i>=0;i--){const t=-1+2*i/12;
+    p.push(place(A,t*w,h*(0.45+0.55*t*t)+h*droop*t*t));}
+  fillPts(p,INK,0.95); stroke(p,r,{w:1.5,close:true,amp:0.028});
+  if(kind==="horseshoe") for(const s of [-1,1]){   // tails past the mouth corners
+    const q=[place(A,s*w*0.90,h*1.1),place(A,s*w*0.98,h*2.3+unit*0.026),
+             place(A,s*w*0.66,h*2.1+unit*0.026),place(A,s*w*0.62,h*1.0)];
+    fillPts(q,INK,0.95); stroke(q,r,{w:1.3,close:true,amp:0.035});
+  }
+}
+
+/* ── interior lines ─────────────────────────────────────────────────────
+   The reference faces carry far more line than mine did: a long bridge running
+   from between the brows to the tip of the nose, a cheek curve, a crease under
+   the lip, jowls. They are most of what makes those heads read as CONSTRUCTED
+   rather than as an oval with features dropped into it. */
+const FACELINES=["none","none","none","bridge","bridge","browbridge",
+                 "cheek","jowl","crease"];
+function faceLines(S,r,unit,g){
+  const rr=R(r), k=g.faceLine;
+  if(k==="none") return;
+  if(k==="bridge"||k==="browbridge"){
+    const A=pin(S,anchor(S,g.noseU-0.013,g.noseV-(k==="browbridge"?0.44:0.27)),0.70);
+    const B=pin(S,anchor(S,g.noseU-0.010,g.noseV+0.02),0.70);
+    stroke([[A.x,A.y],[B.x,B.y]],r,{w:1.5,alpha:0.85,amp:0.035});
+    return;
+  }
+  if(k==="cheek"){
+    const s=r()<0.5?-1:1, C=pin(S,anchor(S,s*0.17,0.20),0.80);
+    stroke(arc(C.x,C.y,unit*rr(0.05,0.09),unit*rr(0.09,0.15),
+               s<0?1.1:2.0,s<0?2.6:3.6,12),r,{w:1.3,alpha:0.70,amp:0.035});
+    return;
+  }
+  if(k==="jowl"){ for(const s of [-1,1]){
+    const C=pin(S,anchor(S,s*0.13,0.42),0.80);
+    stroke(arc(C.x,C.y,unit*0.055,unit*0.075,1.5,3.0,10),r,{w:1.3,alpha:0.65,amp:0.04});
+  } return; }
+  if(k==="crease"){
+    const C=pin(S,anchor(S,g.mouthU,g.mouthV+0.16),0.74);
+    stroke(arc(C.x,C.y,unit*rr(0.04,0.07),unit*0.02,3.4,6.0,10),r,{w:1.3,alpha:0.7,amp:0.045});
+  }
+}
+
+/* ── glasses ─────────────────────────────────────────────────────────────
+   Rims are worn but sit on the face, so R1 clamps them in; the temple arms are
+   the part that leaves the form, so R2 pushes those out to the rim. The bridge
+   joins the INNER edges of the two rims — joining the anchors, which is what
+   it used to do, drew a line straight through both pupils. */
+function drawGlasses(S,r,unit,g){
+  const rr=R(r), J=g.J;
+  // the rims live inside the room the layout pass allotted the eyes
+  const rG=Math.min(unit*rr(0.052,0.066), g.eyeRoom*0.92);
+  const A=[0,1].map(i=>anchor(S,(i?1:-1)*(g.eyeSpread+J.eyeDU[i]),g.eyeV+J.eyeDV[i]));
+  const P=A.map(a=>pin(S,a,0.70));
+  A.forEach((a,i)=>{ if(!seen(a,ROLE.FEATURE)) return;
+    stroke(arc(P[i].x,P[i].y,rG*J.eyeK[i],rG*0.92*J.eyeK[i],0,6.29,26,J.eyeT[i]*0.3),
+      r,{w:1.5,close:true,amp:0.026,alpha:0.9}); });
+  if(seen(A[0],ROLE.FEATURE)&&seen(A[1],ROLE.FEATURE)){
+    const dx=P[1].x-P[0].x, dy=P[1].y-P[0].y, d=Math.hypot(dx,dy)||1;
+    stroke([[P[0].x+dx/d*rG,P[0].y+dy/d*rG],[P[1].x-dx/d*rG,P[1].y-dy/d*rG]],
+      r,{w:1.3,passes:1,amp:0.05});
+  }
+  A.forEach((a,i)=>{ if(a.facing<0.25) return;    // arm gone once it swings round
+    const s=i?1:-1;
+    stroke([place(P[i],s*rG*1.05,0),
+            toForm(S,...place(P[i],s*rG*2.5,-unit*0.006),1.0,"out")],
+      r,{w:1.2,passes:1,alpha:0.8,amp:0.05}); });
+}
+
+/* ---- SUBJECT: heads (ellipsoid) ---- */
+const HEAD={
+  name:"Heads", solid:"ellipsoid", shapes:SHAPES,
+  cols:6, rows:4, fillK:[0.92,0.99], ryK:0.375,
+  build(r,S){
+    const rr=R(r), pick=PICK(r), ch=CHANCE(r);
+
+    /* ── the wonk ──────────────────────────────────────────────────────
+       A big table of variants is not enough on its own. Pick a style per part
+       and stamp each one at its canonical anchor and the result is Mr Potato
+       Head: forty faces with interchangeable pieces in identical sockets. So
+       every part ALSO gets its own offset, scale and rotation — per side — and
+       the two halves of a face are never allowed to agree. The style table
+       gives range; this gives the hand. */
+    const pair=(a,b)=>[rr(a,b),rr(a,b)];
+    const mo=pick(MOUSTACHES), es=pick(EYES), htex=pick(HAIRTEX);
+    /* The vertical jitter is the component that causes collisions, so most of
+       the wonk now lives on the axes that CANNOT collide — sideways, size and
+       rotation. Same amount of character, far less pile-up. */
+    const J={
+      eyeDU: pair(-0.019,0.019),        // around the solid
+      eyeDV: pair(-0.030,0.030),        // up and down it — kept modest
+      eyeK:  pair(0.80,1.24),           // size
+      eyeT:  pair(-0.40,0.40),          // rotation
+      browDV:pair(-0.030,0.030), browK:pair(0.78,1.24), browT:pair(-0.36,0.36),
+      earDV: pair(-0.05,0.05), earK: pair(0.82,1.24)
+    };
+    /* ── R4: pack the face before anything is drawn ──────────────────────
+       Half-heights are the part's real drawn extent divided by S.ry, since the
+       stack works in units of ry. The constants come straight out of the part
+       functions above: an eye is about 0.85 of its `size` tall, the hook nose
+       runs 1.4 of its `size`, and so on. */
+    const eyeSize0=rr(0.80,1.40), noseLen0=rr(0.55,1.30), mouthW0=rr(0.072,0.130);
+    const browK0=Math.max(...J.browK), esp0=rr(0.074,0.120);
+    const RY=S.ry/S.unit;                          // never hardcode this twice
+    const st=[
+      {k:"brow", y:yOfV(rr(-0.40,-0.24)), h:0.085*browK0*0.50/RY},
+      {k:"eye",  y:yOfV(rr(-0.17,-0.02)), h:0.085*eyeSize0*0.85/RY},
+      {k:"nose", y:yOfV(rr(0.02,0.17)),   h:0.100*noseLen0*0.70/RY},
+    ];
+    if(mo!=="none") st.push({k:"mous", y:yOfV(0.24), h:0.048/RY});
+    st.push({k:"mouth", y:yOfV(rr(0.30,0.46)), h:mouthW0*0.45/RY});
+    const squeeze=packStack(st,-0.78,0.84);
+    const Y={}; for(const it of st) Y[it.k]=vOfY(it.y);
+
+    /* Horizontal: the eye pair, solved on the ACTUAL projected anchors rather
+       than estimated, because build has the solid in hand — so it is exact
+       whatever the head shape or turn.
+
+       `eyeSpread` is an ANGLE around the solid, which means the same value put
+       the eyes near the nose on a narrow skull and out at the temples on a wide
+       one. So aim for a target separation in PAGE terms and solve for the angle
+       that gets there. Then size the eyes to the room they turned out to have,
+       rather than picking a size and hoping it fits. */
+    const gl=ch(0.16);
+    const targetSep=S.unit*rr(0.165,0.245);
+    let esp=esp0;
+    for(let i=0;i<16;i++){
+      const A=anchor(S,-esp,Y.eye), B=anchor(S,esp,Y.eye);
+      const d=Math.hypot(B.x-A.x,B.y-A.y);
+      if(Math.abs(d-targetSep)<S.unit*0.010) break;
+      esp=Math.max(0.040,Math.min(0.20, esp*(d>targetSep?0.91:1.09)));
+    }
+    const maxR=Math.max(S.unit*0.030,(targetSep-S.unit*0.016)/2);
+    const eyeSize=Math.min(eyeSize0, maxR/(S.unit*0.085));
+
+    // Eye height first, because the hairline is derived FROM it: a hairline
+    // rolled blind lands on the eyes about one time in seven, and a rule that
+    // cannot fail beats a gate that has to notice.
+    const eyeV=Y.eye, eyeY=Math.sin(eyeV*Math.PI/2);
+    return { J, eyeV, squeeze,
+      browV:Y.brow, noseV:Y.nose, mousV:Y.mous!==undefined?Y.mous:0.24,
+      mouthV:Y.mouth, glasses:gl,
+      hair: pick(HAIRSHAPES), hairTex: htex, strays: ch(0.50),
+      hairDrop: eyeY-rr(0.17,0.46), hairTilt: rr(-0.12,0.12),
+      faceLine: pick(FACELINES),
+      beard: pick(BEARDS), beardTex: htex, moustache: mo,
+      eyeStyle: es, wink: ch(0.09),
+      browStyle: pick(BROWS), brow: ch(0.74),
+      noseStyle: pick(NOSES), mouthStyle: pick(MOUTHS),
+      earStyle: pick(HEAR),
+      eyeSpread: esp, eyeSize, eyeRoom: maxR,
+      noseU: rr(-0.017,0.017), noseLen: noseLen0,
+      mouthU: rr(-0.024,0.024), mouthW: mouthW0, mouthT: rr(-0.24,0.24),
+      tint: ch(0.34)?pick(TINTS):null, freckles: ch(0.18),
+      shade: ch(0.50)?Math.round(rr(16,34)):0
+    };
+  },
+
+  /* ── the gates ─────────────────────────────────────────────────────────
+     Borrowed from Strays: generate, then judge, and throw the bad ones away.
+     A gate is cheaper and far more honest than narrowing every parameter range
+     until nothing can go wrong — the ranges stay expressive and only the bad
+     corners get rejected. A cell that fails any gate is rerolled with a new
+     seed; the footer reports which gates fired, because a gate that never
+     fires is a gate you do not need. */
+  gates:[
+    // Total black must land in a readable band: not a silhouette, not a blank
+    // egg. A low fringe counts, because it is ink whatever the style is called.
+    ["contrast", g=>{
+      // the utensil carries value of its own: a marker brings weight that a
+      // technical pen does not, so the spec has to make up the difference
+      const tw=(tool==="marker"||tool==="brush")?1:
+               (tool==="tech"||tool==="pencil")?-1:0;
+      const s=hairInk(g)+BEARDINK[g.beard]*(g.beardTex==="solid"?1:0.7)+
+              (g.moustache!=="none"?1:0)+
+              (g.glasses?1:0)+(g.shade?1:0)+tw+
+              (MASS.has(g.hair)&&g.hairTex==="solid"&&g.hairDrop>-0.34?1:0);
+      return s>=2 && s<=7;
+    }],
+    // Parts that turn to mush when stacked on each other.
+    ["collision", g=>
+      !(g.glasses && ["wide","boggle","ring","spiral","star"].includes(g.eyeStyle)) &&
+      !(g.moustache!=="none" && ["oh","gape"].includes(g.mouthStyle)) &&
+      !(g.beard==="full" && g.moustache!=="none")],
+    // If the packer had to shove things a long way, the spec was never going
+    // to sit on this head — better to reroll than to draw a squashed face.
+    ["cramped", g=> g.squeeze < 0.55],
+    // A face needs something in it.
+    ["blank", g=> !(g.noseStyle==="none" && !g.brow &&
+      ["closed","pinhole"].includes(g.eyeStyle))]
+  ],
+  tag: g=>g.hair+"/"+g.hairTex,
+
+  draw(r,S,g,unit){
+    const rr=R(r), J=g.J;
+    const sil=outline(S);
+    if(g.tint) tintPatch(S,r,unit,g.tint,sil);
+    // R2: ears are attached, so they go on BEFORE the outline — which also
+    // lets a hat drawn later cover them, the way a hat does
+    drawEars(S,r,unit,g.earStyle,J);
+    // form shading, clipped to the real outline so tone cannot leak off the form
+    if(g.shade) clipTo(sil,()=>surfHatch(S,r,{v0:-0.30,v1:0.92,n:g.shade,
+      du:0.05,dv:0.10,w:0.95,alpha:0.5,cut:-0.05}));
+    stroke(sil,r,{w:3.0,passes:2,close:true,amp:0.011});
+    drawHair(g,S,r,unit);
+    drawBeard(g,S,r,unit);
+
+    // a fringe covers the brows: a rule, not a coincidence
+    const browsHidden=MASS.has(g.hair) && g.hairTex==="solid" &&
+      g.hairDrop > Math.sin(g.browV*Math.PI/2);
+
+    for(const [i,s] of [[0,-1],[1,1]]){
+      const du=g.eyeSpread+J.eyeDU[i];
+      const A0=anchor(S,s*du,g.eyeV+J.eyeDV[i]);
+      if(!seen(A0,ROLE.FEATURE)) continue;
+      const A=pin(S,A0,0.66);                                    // R1
+      eye(A,r,s,{size:unit*0.085*g.eyeSize*J.eyeK[i]*(0.9+0.2*A.facing),
+                 style:(g.wink&&i===1)?"closed":g.eyeStyle,
+                 tilt:J.eyeT[i]*0.5, lid:anim.lid});
+      if(g.brow && !browsHidden){
+        const B=pin(S,anchor(S,s*du,g.browV+J.browDV[i]),0.72);
+        brow(B,r,s,{size:unit*0.085*J.browK[i],style:g.browStyle,
+                    tilt:J.browT[i]*0.4, S});
+      }
+    }
+    if(g.glasses) drawGlasses(S,r,unit,g);
+
+    const N0=anchor(S,g.noseU,g.noseV);
+    if(seen(N0,ROLE.FEATURE))
+      nose(pin(S,N0,0.64),r,{size:unit*0.10*g.noseLen,style:g.noseStyle});
+
+    const M0=anchor(S,g.mouthU,g.mouthV);
+    if(seen(M0,ROLE.FEATURE)){
+      // only a solid mass buries the mouth; a combed one you can draw over
+      const buried=g.beard==="full" && g.beardTex==="solid";
+      mouth(pin(S,M0,0.66),r,{w:unit*g.mouthW, tilt:g.mouthT, smile:anim.smile,
+        style:buried?"line":g.mouthStyle, col:buried?PAPER:INK});
+    }
+    drawMoustache(g,S,r,unit);
+    faceLines(S,r,unit,g);
+
+    // freckles sit on the cheeks: scattered across the middle they landed on
+    // the nose and the mouth, which is the jumble this pass exists to stop
+    if(g.freckles) for(const sd of [-1,1]){
+      const F=pin(S,anchor(S,sd*0.16,g.noseV+0.06),0.74);
+      for(let i=0;i<5;i++){
+        const [x,y]=toForm(S,...place(F,rr(-0.6,0.6)*unit*0.09,
+                                       rr(-0.5,0.5)*unit*0.07),0.84,"in");
+        fillPts(arc(x,y,unit*0.008,unit*0.008,0,6.29,8),INK,0.7);
+      } }
+  }
+};
+
+/* ── cats ────────────────────────────────────────────────────────────────
+   Sixteen kinds rather than one cat with a stripe toggle. A kind is a small
+   set of overrides — coat, ear type, a default expression, the odd accessory —
+   laid over the same jittered base, so a Siamese and a void cat are recognisably
+   different animals while still being drawn by the same hand.
+
+   The coat is where most of it lives, because value is what separates a tabby
+   from a tuxedo from a hole in the paper. */
+const CAT_KINDS={
+  tabby:   {coat:"stripes", fur:0.40},
+  tabby2:  {coat:"stripes", ears:"tufted", fur:0.55},
+  tuxedo:  {coat:"tuxedo",  fur:0.30},
+  void:    {coat:"void",    eyes:"boggle", fur:0.25},
+  siamese: {coat:"points",  ears:"large",  eyes:"almond", fur:0.15},
+  calico:  {coat:"patches", fur:0.45},
+  fold:    {coat:"plain",   ears:"folded", fur:0.35},
+  maine:   {coat:"fluff",   ears:"tufted", fur:1.00},
+  lynx:    {coat:"fluff",   ears:"tall",   fur:0.85},
+  sphynx:  {coat:"bare",    ears:"huge",   eyes:"squint", fur:0.00},
+  persian: {coat:"fluff",   ears:"small",  eyes:"wide",   fur:1.00},
+  kitten:  {coat:"plain",   ears:"large",  eyes:"boggle", fur:0.50},
+  loaf:    {coat:"stripes", eyes:"closed", fur:0.60},
+  grump:   {coat:"points",  eyes:"angry",  mouth:"frown", fur:0.30},
+  pirate:  {coat:"tuxedo",  ears:"torn",   patch:true,    fur:0.35},
+  dapper:  {coat:"plain",   monocle:true,  bowtie:true,   fur:0.20},
+  oracle:  {coat:"void",    ears:"large",  eyes:"ring", thirdEye:true, fur:0.20},
+  toothy:  {coat:"stripes", fangs:true,    fur:0.45},
+  cloud:   {coat:"fluff",   ears:"small",  eyes:"dot",    fur:1.00},
+};
+const CAT_NAMES=Object.keys(CAT_KINDS);
+
+/* One ear. `type` changes the silhouette; the jitter changes the pair. */
+function catEar(S,r,unit,i,s,type,J,col){
+  const rr=R(r);
+  const A=anchor(S,s*(0.115+J.earDU[i]), -0.62+J.earDV[i]);
+  if(A.facing<-0.10) return;
+  // Sit the base ON the crown, a shade inside it, rather than at the projected
+  // anchor — an ear is attached, and this is R2 again.
+  const b=silPt(S,(s<0?Math.PI+0.92:2*Math.PI-0.92)+s*J.earDU[i]*7, 0.95);
+  const F={x:b[0],y:b[1],...axes(S)};
+  const k=J.earK[i];
+  let base=unit*rr(0.082,0.108)*k, h=unit*rr(0.115,0.170)*k;
+  if(type==="large")  { h*=1.32; base*=1.06; }
+  if(type==="tall")   { h*=2.05; base*=0.84; }   // the lanky ones, kept on purpose
+  if(type==="huge")   { h*=1.58; base*=1.24; }
+  if(type==="small")  { h*=0.66; base*=0.92; }
+  if(type==="folded") { h*=0.78; }
+  const tip=place(F, s*base*J.earTilt, -h);
+  let p;
+  if(type==="torn"&&i===1)                       // one ear notched, not both
+    p=[place(F,-base*0.9,0), place(F,s*base*J.earTilt*0.55,-h*0.55),
+       place(F,s*base*J.earTilt*0.95,-h*0.72), tip, place(F,base*0.9,0)];
+  else
+    p=[place(F,-base*0.9,0), tip, place(F,base*0.9,0)];
+  fillPts(p,col===PAPER?INK:PAPER,0.95);
+  // An ear belongs to the silhouette, so it gets the silhouette's weight —
+  // lighter than that and it reads as an antenna stuck on the skull.
+  stroke(p,r,{w:3.0,passes:2,amp:0.014,col});
+  if(type==="folded"){                            // a flap over the tip
+    const f=[place(F,-base*0.75,-h*0.55), place(F,s*base*0.5,-h*1.05),
+             place(F,base*0.85,-h*0.35)];
+    fillPts(f,col===PAPER?INK:PAPER,0.95); stroke(f,r,{w:1.8,amp:0.04,col});
+  }else if(type==="tufted"){                      // hairs out of the ear
+    for(let t=-1;t<=1;t++) stroke([place(F,t*base*0.35,-h*0.25),
+      place(F,t*base*0.55+s*base*0.2,-h*rr(0.85,1.25))],
+      r,{w:1.1,passes:1,alpha:0.8,amp:0.06,col});
+  }else{                                          // inner line
+    stroke([place(F,-base*0.30,-base*0.15), place(F,s*base*J.earTilt*0.5,-h*0.60),
+            place(F,base*0.30,-base*0.15)],r,{w:1.2,passes:1,alpha:0.65,amp:0.024,col});
+  }
+}
+
+const CAT={
+  name:"Cats", solid:"ellipsoid",
+  shapes:["round","round","wide","wide","egg","square","peanut","lopsided",
+           "pear","gourd","stone","slab","harmonic","mushroom"],
+  build(r,S){
+    const rr=R(r), pick=PICK(r), ch=CHANCE(r);
+    const pair=(a,b)=>[rr(a,b),rr(a,b)];
+    const J={
+      eyeDU: pair(-0.014,0.014), eyeDV: pair(-0.05,0.05),
+      eyeK:  pair(0.84,1.20),    eyeT:  pair(-0.30,0.30),
+      earDU: pair(-0.022,0.022), earDV: pair(-0.055,0.055),
+      earK:  pair(0.84,1.24),    earTilt: rr(0.05,0.55),
+      whisk: pair(-0.02,0.02)
+    };
+    const kind=pick(CAT_NAMES), K=CAT_KINDS[kind];
+    const es=K.eyes||pick(["open","open","open","wide","dot","closed","almond",
+                           "sleepy","boggle","squint","star","spiral"]);
+    const esp=rr(0.062,0.105);
+    return { J, kind,
+      coat: K.coat,
+      earType: K.ears||pick(["normal","normal","normal","large","tall","small","tufted"]),
+      eyeStyle: es, eyeSize: BIGEYES.has(es)? Math.min(1.15, 0.40+esp*7.0) : rr(0.85,1.25),
+      mouthStyle: K.mouth||pick(["none","none","none","line","frown","smirk","zigzag"]),
+      patch: !!K.patch, monocle: !!K.monocle, bowtie: !!K.bowtie,
+      thirdEye: !!K.thirdEye, fangs: !!K.fangs || ch(0.10),
+      eyeSpread: esp, eyeV: rr(-0.14,0.03),
+      noseV: rr(0.14,0.26), muzzle: ch(0.82), whiskers: ch(0.85),
+      collar: !K.bowtie && ch(0.24),
+      tint: (K.coat==="void")?null:(ch(0.40)?pick(TINTS):null),
+      tongue: ch(0.14), shade: ch(0.40)?Math.round(rr(14,28)):0,
+      // furriness is a dial, not a coat name: a sphynx is 0 and a persian is 1,
+      // and it drives the escaping hairs, the coat texture AND its density
+      fur: Math.max(0,Math.min(1.25,(K.fur!==undefined?K.fur:0.40)+rr(-0.14,0.18))),
+      coatTex: pick(["none","none","comb","comb","tuft","tuft","stipple",
+                     "scribble","wave","pencil","shade","tooth","charcoal"])
+    };
+  },
+  gates:[
+    // A void cat IS its eyes. Shut them and the cell is a hole in the paper.
+    ["void-blank", g=> !(g.coat==="void" &&
+        ["closed","pinhole","squint","sleepy"].includes(g.eyeStyle))],
+    // Ink drawn on ink is not drawn at all.
+    ["invisible",  g=> !(g.coat==="void" && (g.monocle||g.patch||g.collar))],
+    // An eyepatch over the only visible eye leaves nothing to look at.
+    ["over-patch", g=> !(g.patch && ["closed","pinhole"].includes(g.eyeStyle))]
+  ],
+  tag: g=>g.kind,
+
+  draw(r,S,g,unit){
+    const rr=R(r), J=g.J;
+    const sil=outline(S);
+    const dark=g.coat==="void";
+    const fc=dark?PAPER:INK;                      // feature colour
+
+    if(g.tint) tintPatch(S,r,unit,g.tint,sil);
+
+    // ears go on first, so the head outline crosses their base
+    for(const [i,s] of [[0,-1],[1,1]]) catEar(S,r,unit,i,s,g.earType,J,fc);
+
+    // ── coat ──────────────────────────────────────────────────────────
+    if(dark){ fillPts(sil,INK,0.97); }
+    else if(g.shade) clipTo(sil,()=>surfHatch(S,r,{v0:-0.35,v1:0.92,n:g.shade,
+      du:0.05,dv:0.10,w:0.9,alpha:0.42,cut:-0.05}));
+    // coat texture, scaled by how furry this animal is
+    if(g.coatTex!=="none" && g.fur>0.12)
+      clipTo(sil,()=>texture(g.coatTex,S,r,unit,{v0:-0.92,v1:0.92,
+        dens:0.35+g.fur*1.15, col:fc, alpha:0.5}));
+    stroke(sil,r,{w:3.0,passes:2,close:true,amp:0.012,col:dark?PAPER:INK});
+
+    if(g.coat==="tuxedo"){                        // dark crown, light face
+      const m=cap(S,{dir:-1,span:1,rad:rr(1.01,1.05),
+        drop:Math.min(-0.24,Math.sin(g.eyeV*Math.PI/2)-0.20),...clumps(r)});
+      fillPts(m,INK,0.95); stroke(m,r,{w:2.25,amp:0.017,close:true}); hairline(m,r,1.8);
+    }
+    if(g.coat==="points"){                        // dark muzzle and mask
+      const P=anchor(S,0,0.30);
+      const p=arc(...place(P,0,0),unit*0.145,unit*0.125,0,6.29,24);
+      clipTo(p,()=>texture("comb",S,r,unit,{v0:0.05,v1:0.75,dens:1.6,col:fc,alpha:0.9}));
+      clipTo(sil,()=>surfHatch(S,r,{v0:0.10,v1:0.70,n:26,du:0.012,dv:0.05,
+                                    w:0.95,alpha:0.45,col:fc}));
+    }
+    if(g.coat==="patches") for(let i=0;i<Math.round(rr(2,4));i++){
+      const a=rr(0,6.28), q=silPt(S,a,rr(0.30,0.72));
+      const p=[];
+      for(let k=0;k<=14;k++){const t=k/14*6.2832;
+        const rad=unit*rr(0.055,0.105)*(1+0.28*Math.sin(3*t+a));
+        p.push([q[0]+Math.cos(t)*rad, q[1]+Math.sin(t)*rad*0.82]);}
+      fillPts(p,i%2?INK:TINTS[0],i%2?0.80:0.55);
+    }
+    // ── furriness ──────────────────────────────────────────────────────
+    // One dial from sleek to cloud. Hairs escaping the OUTLINE do far more for
+    // "furry" than anything drawn inside it, so the edge gets the budget.
+    if(g.fur>0.10) furEdge(S,r,unit,sil,{upTo:1.0, n:Math.round(g.fur*38),
+      len:0.016+0.026*g.fur, w:0.9+0.5*g.fur, col:fc});
+    if(g.coat==="fluff" && g.fur>0.6){             // a second, longer layer
+      const n=Math.round(g.fur*14);
+      for(let i=0;i<n;i++){
+        const a=rr(0,6.2832);
+        stroke([silPt(S,a,1.00),silPt(S,a+rr(-0.07,0.07),1.06+0.10*g.fur)],
+          r,{w:rr(1.0,1.6),alpha:0.75,amp:0.07,col:fc});
+      }
+    }
+    if(g.coat==="bare") for(let i=0;i<3;i++){     // sphynx wrinkles
+      const F=anchor(S,0,-0.34+i*0.10);
+      if(F.facing>0.1) stroke([place(F,-unit*0.07,0),place(F,0,unit*0.012),
+        place(F,unit*0.07,0)],r,{w:1.1,passes:1,alpha:0.6,amp:0.03,col:fc});
+    }
+    if(g.coat==="stripes"){
+      const F=anchor(S,0,-0.42);
+      if(F.facing>0.05) for(let i=-1;i<=1;i++)
+        stroke([place(F,i*unit*0.06,0),place(F,i*unit*0.075,-unit*0.09)],
+          r,{w:1.7,passes:1,alpha:0.8,amp:0.024,col:fc});
+      for(const s of [-1,1]){
+        const C=anchor(S,s*0.19,0.08);
+        if(C.facing>0.05) for(let i=0;i<2;i++)
+          stroke([place(C,s*unit*0.02,i*unit*0.05),place(C,s*unit*0.10,i*unit*0.05-unit*0.01)],
+            r,{w:1.5,passes:1,alpha:0.7,amp:0.022,col:fc});
+      }
+    }
+
+    // ── face ──────────────────────────────────────────────────────────
+    for(const [i,s] of [[0,-1],[1,1]]){
+      if(g.patch && i===0) continue;              // covered below
+      const A0=anchor(S,s*(g.eyeSpread+J.eyeDU[i]),g.eyeV+J.eyeDV[i]);
+      if(!seen(A0,ROLE.FEATURE)) continue;
+      eye(pin(S,A0,0.74),r,s,{size:unit*0.095*g.eyeSize*J.eyeK[i]*(0.9+0.2*A0.facing),
+        style:g.eyeStyle, col:fc, tilt:J.eyeT[i]*0.5, lid:anim.lid});
+    }
+    if(g.thirdEye){                               // straight up the forehead
+      const T=anchor(S,0,-0.50);
+      if(seen(T,ROLE.FEATURE))
+        eye(pin(S,T,0.70),r,1,{size:unit*0.070,style:"ring",col:fc});
+    }
+    if(g.patch){                                  // eyepatch, plus its strap
+      const A=pin(S,anchor(S,-(g.eyeSpread+0.01),g.eyeV),0.74);
+      const p=arc(A.x,A.y,unit*0.070,unit*0.062,0,6.29,20);
+      fillPts(p,INK,0.95); stroke(p,r,{w:1.6,close:true,amp:0.03});
+      stroke([toForm(S,...place(A,-unit*0.10,-unit*0.03),1.0,"out"),
+              toForm(S,...place(A, unit*0.22,-unit*0.05),1.0,"out")],
+        r,{w:1.4,passes:1,alpha:0.85,amp:0.04});
+    }
+    if(g.monocle){
+      const A=pin(S,anchor(S,g.eyeSpread+0.01,g.eyeV),0.76);
+      stroke(arc(A.x,A.y,unit*0.075,unit*0.072,0,6.29,26),r,{w:1.6,close:true,amp:0.022});
+      stroke([place(A,0,unit*0.075),place(A,-unit*0.02,unit*0.16)],
+        r,{w:1.1,passes:1,alpha:0.8,amp:0.06});
+    }
+
+    const Nz=pin(S,anchor(S,0,g.noseV),0.70);
+    if(seen(anchor(S,0,g.noseV),ROLE.FEATURE)){
+      const p=[place(Nz,-unit*0.035,0),place(Nz,unit*0.035,0),place(Nz,0,unit*0.04)];
+      fillPts(p,fc,0.92); stroke(p,r,{w:1.4,close:true,amp:0.021,col:fc});
+      if(g.muzzle)
+        stroke(arc(...place(Nz,0,unit*0.055),unit*0.05,unit*0.035,0.15,3.0,12),
+          r,{w:1.6,amp:0.024,col:fc});
+      if(g.tongue){ const p2=arc(...place(Nz,0,unit*0.10),unit*0.022,unit*0.030,0,3.14,10);
+        fillPts(p2,TINTS[2],0.9); stroke(p2,r,{w:1.1,passes:1,amp:0.020,col:fc}); }
+      if(g.fangs) for(const s of [-1,1]){         // two little teeth over the lip
+        const p3=[place(Nz,s*unit*0.030,unit*0.055),place(Nz,s*unit*0.048,unit*0.055),
+                  place(Nz,s*unit*0.038,unit*0.095)];
+        fillPts(p3,dark?PAPER:PAPER,0.95); stroke(p3,r,{w:1.1,close:true,amp:0.03,col:fc});
+      }
+      if(g.whiskers) for(const [i,s] of [[0,-1],[1,1]]) for(let k=0;k<3;k++){
+        // a fan from clear of the muzzle, rather than a parallel band across
+        // the whole cheek starting at the nose
+        const a=(k-1)*0.36+J.whisk[i]*5, L=unit*rr(0.16,0.25);
+        const o=place(Nz,s*unit*0.075,unit*0.035+unit*J.whisk[i]);
+        stroke([o,[o[0]+s*Math.cos(a)*L, o[1]+Math.sin(a)*L]],
+          r,{w:1.1,alpha:0.70,amp:0.022,col:fc});
+      }
+    }
+    if(g.mouthStyle!=="none"){
+      const M0=anchor(S,0,g.noseV+0.22);
+      if(seen(M0,ROLE.FEATURE))
+        mouth(pin(S,M0,0.74),r,{w:unit*0.075,style:g.mouthStyle,col:fc});
+    }
+    if(g.bowtie){                                 // worn, so it hangs off the rim
+      const C=anchor(S,0,0.96);
+      const b=toForm(S,C.x,C.y,1.02,"out");
+      for(const s of [-1,1]){
+        const p=[[b[0],b[1]],[b[0]+s*unit*0.075,b[1]-unit*0.038],
+                 [b[0]+s*unit*0.075,b[1]+unit*0.038]];
+        fillPts(p,INK,0.92); stroke(p,r,{w:1.4,close:true,amp:0.035});
+      }
+      fillPts(arc(b[0],b[1],unit*0.018,unit*0.018,0,6.29,10),INK);
+    }
+    if(g.collar){                                 // hung off the chin, not floating
+      const C=anchor(S,0,0.95), b=toForm(S,C.x,C.y,0.99,"out");
+      const F={x:b[0],y:b[1],...axes(S)};
+      stroke([place(F,-unit*0.15,-unit*0.012),place(F,0,unit*0.028),
+              place(F,unit*0.15,-unit*0.012)],r,{w:2.5,amp:0.030});
+      fillPts(arc(...place(F,0,unit*0.052),unit*0.018,unit*0.018,0,6.29,10),INK,0.9);
+    }
+  }
+};
+/* ---- SUBJECT: owls (ellipsoid + a facial disc, which is its own solid) ---- */
+const OWL={
+  name:"Owls", solid:"ellipsoid + disc",
+  shapes:["round","round","egg","wide","acorn","bell","lumpy"], tag:g=>g.beak,
+  build(r,S){ const rr=R(r),pick=PICK(r),ch=CHANCE(r);
+    return {tufts:ch(0.6), discs:ch(0.85), beak:pick(["small","hook","wide"]),
+      breast:pick(["none","hatch","chevron"]), feet:ch(0.7),
+      eyeSize:rr(0.95,1.30), tint:ch(0.36)?pick(TINTS):null, brow:ch(0.5)};
+  },
+  draw(r,S,g,unit){
+    const rr=R(r);
+    const sil=outline(S);
+    if(g.tint) tintPatch(S,r,unit,g.tint,sil,"body");
+    if(g.tufts) for(const s of [-1,1]){
+      const A=anchor(S,s*0.1,-0.7);
+      if(A.facing>-0.15){
+        const p=[place(A,-unit*0.06,0),place(A,s*unit*0.14,-unit*rr(0.16,0.26)),place(A,unit*0.06,0)];
+        fillPts(p,PAPER); stroke(p,r,{w:1.9,amp:0.030});
+      }
+    }
+    stroke(sil,r,{w:3.0,passes:2,close:true,amp:0.012});
+    for(const s of [-1,1]){
+      const A0=anchor(S,s*0.090,-0.12);
+      if(A0.facing>0.05){
+        const A=pin(S,A0,0.62);                  // R1: keep the disc on the form
+        const sz=unit*0.085*g.eyeSize*(0.9+0.2*A.facing);
+        if(g.discs) stroke(arc(A.x,A.y,sz*1.26,sz*1.22,0,6.29,30),r,{w:1.4,close:true,alpha:0.75,amp:0.018});
+        stroke(arc(A.x,A.y,sz,sz,0,6.29,30),r,{w:2,close:true,amp:0.028});
+        fillPts(arc(A.x,A.y,sz*0.55,sz*0.55,0,6.29,18),INK);
+        fillPts(arc(A.x-sz*0.2,A.y-sz*0.2,sz*0.14,sz*0.14,0,6.29,10),PAPER,0.85);
+        if(g.brow) stroke(arc(A.x,A.y,sz*1.2,sz*0.8,3.4,5.9,12),r,{w:1.8,amp:0.024});
+      }
+    }
+    const B=anchor(S,0,0.06);
+    if(B.facing>0){
+      let p;
+      if(g.beak==="hook") p=[place(B,-unit*0.03,-unit*0.02),place(B,unit*0.03,-unit*0.02),
+                             place(B,unit*0.008,unit*0.075),place(B,-unit*0.02,unit*0.05)];
+      else if(g.beak==="wide") p=[place(B,-unit*0.05,-unit*0.01),place(B,unit*0.05,-unit*0.01),place(B,0,unit*0.06)];
+      else p=[place(B,-unit*0.028,-unit*0.015),place(B,unit*0.028,-unit*0.015),place(B,0,unit*0.055)];
+      fillPts(p,TINTS[0],0.75); stroke(p,r,{w:1.7,close:true,amp:0.022});
+    }
+    const Br=anchor(S,0,0.5);
+    if(Br.facing>0){
+      if(g.breast==="hatch") hatch(Br.x,Br.y,unit*0.16,unit*0.13,r,{n:16,ang:1.3,len:0.45,w:0.9});
+      if(g.breast==="chevron") for(let i=0;i<4;i++){
+        const y=(i-1.5)*unit*0.05;
+        stroke([place(Br,-unit*0.1,y),place(Br,0,y+unit*0.03),place(Br,unit*0.1,y)],
+               r,{w:1.2,passes:1,alpha:0.7,amp:0.022});
+      }
+    }
+    if(g.feet){ const F=anchor(S,0,0.97);
+      for(const s of [-1,1]) for(let i=-1;i<=1;i++)
+        stroke([place(F,s*unit*0.08,0),place(F,s*unit*0.08+i*unit*0.035,unit*0.055)],
+               r,{w:1.6,passes:1,amp:0.022});
+    }
+  }
+};
+
+/* ---- SUBJECT: beetles (a tilted disc — radial, so legs come off the rim) ---- */
+const BEETLE={
+  name:"Beetles", solid:"tilted disc",
+  shapes:["round","egg","long","wide","teardrop","lumpy"], tag:g=>g.spots,
+  build(r,S){ const rr=R(r),pick=PICK(r),ch=CHANCE(r);
+    return {legs:6, antennae:ch(0.9), spots:pick(["none","pair","many","stripe"]),
+      pronotum:ch(0.85), split:ch(0.9), tint:ch(0.45)?pick(TINTS):null,
+      legKink:rr(0.3,0.8), bodyFill:ch(0.25)};
+  },
+  draw(r,S,g,unit){
+    const rr=R(r);
+    // legs first, radiating from the rim of the disc so the body overlaps them
+    for(let i=0;i<g.legs;i++){
+      const s=i<3?-1:1, k=i%3;
+      // u must match the side we push toward: u<0.5 is +x (right), u>0.5 is -x.
+      const u=s<0?(0.75-k*0.03):(0.25+k*0.03);
+      const v=-0.40+k*0.42;               // fore / mid / hind, not all at the waist
+      const A=anchor(S,u,v);
+      const knee=place(A,s*unit*0.15,-unit*0.03);
+      const foot=place(A,s*unit*0.20*(0.7+g.legKink),unit*0.13);
+      stroke([[A.x,A.y],knee,foot],r,{w:1.5,amp:0.026,alpha:0.95});
+    }
+    // elytra: the disc's own outline
+    const sil=outline(S);
+    if(g.tint) tintPatch(S,r,unit,g.tint,sil,"body");
+    if(g.bodyFill) fillPts(sil,INK,0.82);
+    stroke(sil,r,{w:3.0,passes:2,close:true,amp:0.011});
+    if(g.split){ const T=anchor(S,0,-0.55), Bm=anchor(S,0,0.9);
+      stroke([[T.x,T.y],[Bm.x,Bm.y]],r,{w:1.6,alpha:0.85,amp:0.024}); }
+    if(g.pronotum){
+      const P=anchor(S,0,-0.62);
+      const p=arc(P.x,P.y,unit*0.11,unit*0.07,0,6.29,24);
+      fillPts(p,g.bodyFill?INK:PAPER,g.bodyFill?1:0.9); stroke(p,r,{w:1.9,close:true,amp:0.026});
+    }
+    const H=anchor(S,0,-0.88);
+    const hp=arc(H.x,H.y,unit*0.06,unit*0.045,0,6.29,20);
+    fillPts(hp,INK,0.9); stroke(hp,r,{w:1.6,close:true,amp:0.022});
+    if(g.antennae) for(const s of [-1,1])
+      stroke([place(H,s*unit*0.03,-unit*0.02),place(H,s*unit*0.1,-unit*0.09),
+              place(H,s*unit*0.15,-unit*0.075)],r,{w:1.2,passes:1,amp:0.024});
+    if(g.spots==="pair"||g.spots==="many"){
+      const n=g.spots==="pair"?2:6;
+      for(let i=0;i<n;i++){
+        const s=i%2?1:-1, row=Math.floor(i/2);
+        const A=anchor(S,0.5+s*0.06,-0.15+row*0.32);
+        if(A.facing>0.05) fillPts(arc(A.x,A.y,unit*0.03,unit*0.028,0,6.29,14),
+          g.bodyFill?PAPER:INK,0.9);
+      }
+    }
+    if(g.spots==="stripe") for(const s of [-1,1]){
+      const A=anchor(S,0.5+s*0.07,0.1);
+      if(A.facing>0.05) stroke([place(A,0,-unit*0.14),place(A,0,unit*0.16)],
+        r,{w:2.6,passes:1,alpha:0.85,amp:0.024});
+    }
+  }
+};
+
+
+/* ── flowers ─────────────────────────────────────────────────────────────
+   Built from photographs of real specimens, not from drawing guides. That
+   distinction did real work here: almost every "how to draw a flower" source
+   reduces the lot to a ring of ovals round a circle, and of the seven forms
+   below exactly none actually work that way.
+
+   What the photographs showed, and what each one forced:
+
+   daisy       ~35 strap rays with BLUNT tips, in two overlapping ranks at
+               visibly uneven lengths, each with a central crease. The disc is a
+               granular domed cushion only about a quarter of the width.
+   sunflower   the disc is not dots. It is thousands of tiny TUBES pointing
+               outward, packed on two interlocking spiral families, getting
+               smaller and tighter toward the middle.
+   coneflower  a spiky dome whose florets break its own silhouette, and rays
+               that DROOP steeply away from it, veined lengthwise.
+   poppy       four broad tissue petals in a shallow BOWL, heavily overlapped,
+               edges undulating, radial crease lines, and a tight dark ring of
+               stamens around a pale capsule.
+   iris        not radial at all — three standards arching up and inward, three
+               broad falls hanging down and out, each fall with a pale beard.
+   tulip       a closed spindle: tepals wrapped, long vertical seams, frayed tip.
+   bluebell    an arching stem with bells hung along one side, each bell a
+               narrow tube whose six tips curl sharply back.
+
+   The radial heads hang off the same tilted-disc solid the beetles use, so
+   petals are pinned by ANGLE in the disc's own plane and foreshorten properly
+   when the head tips toward the light. The three non-radial forms get their own
+   construction, because forcing them into a ring is exactly the mistake. */
+
+const GOLDEN=Math.PI*(3-Math.sqrt(5));        // 137.5°, the phyllotactic angle
+/* Colour where it belongs: petals take the flower tints, foliage is green, and
+   a composite disc takes a warm ochre. Using one palette for all three was
+   what made the earlier sheets read as monochrome drawings with a stain on
+   them rather than as coloured ones. */
+const FOLIAGE=["#7d8a6a","#8a9472","#6d7c5c","#94a07a"];
+const POLLEN =["#b08a4a","#a8823c","#bd9a5c"];
+
+/* Half-width of a petal along its length, base (0) to tip (1). */
+function petalProfile(style,t){
+  switch(style){
+    case "strap":   return 0.44+0.56*Math.sin(Math.PI*Math.pow(t,0.75));
+    case "blunt":   return Math.pow(Math.sin(Math.PI*Math.min(1,t*1.13)),0.40);
+    case "pointed": return Math.sin(Math.PI*t)*(1-t*0.45);
+    case "paddle":  return Math.pow(t,0.45)*(1-Math.pow(t,5))*1.20;
+    case "broad":   return Math.pow(Math.sin(Math.PI*t),0.42);
+    case "frill":   return Math.pow(Math.sin(Math.PI*t),0.50)*(1+0.17*Math.sin(t*19));
+    case "notch":   return Math.pow(Math.sin(Math.PI*t),0.55)*(1-0.58*Math.pow(t,10));
+    default:        return Math.pow(Math.sin(Math.PI*t),0.60);
+  }
+}
+/* One petal, closed, in the disc's own plane. `bend` sweeps it round for a
+   pinwheel; `lift` carries the tip out of the plane along the disc's axis,
+   which is how a coneflower's droop and an iris standard's arch are made. */
+function petalPts(S,a,r0,r1,hw,style,bend,lift){
+  const N=13, out=[];
+  const P=(t,sd)=>{
+    const rad=r0+(r1-r0)*t, ang=a+bend*t*t+sd*hw*petalProfile(style,t);
+    const k=rad*shapeR(S,ang);
+    const q=project(S,[S.rx*k*Math.cos(ang), S.ry*k*Math.sin(ang), S.rz*lift*t*t]);
+    return [q[0],q[1]];
+  };
+  for(let i=0;i<=N;i++) out.push(P(i/N,-1));
+  for(let i=N;i>=0;i--) out.push(P(i/N, 1));
+  return out;
+}
+/* A direction in the plant's OWN frame — an angle round the vertical axis and a
+   length — carried through the rotation and handed back as a page offset plus a
+   depth. This is what attaches a leaf to the armature: swing the flower and a
+   leaf pointing at the viewer foreshortens toward nothing while one pointing
+   sideways keeps its full length, and the depth says whether it passes in front
+   of the stem or behind it.
+
+   The stem itself stays in page space, because a stem answers to gravity rather
+   than to the pose. The leaves answer to the pose. */
+function radialDir(S,th,len,drop){
+  const v=mul(S.M,[S.rx*len*Math.sin(th), S.ry*drop, S.rz*len*Math.cos(th)]);
+  return [v[0],v[1],v[2]];
+}
+/* A leaf blade: a lens from its base along a page-space direction. */
+function leafBlade(b,dx,dy,wid,curl){
+  const L=Math.hypot(dx,dy)||1, ux=dx/L, uy=dy/L, nx=-uy, ny=ux, pts=[];
+  for(let i=0;i<=10;i++){ const t=i/10, w=Math.sin(Math.PI*t)*wid+curl*Math.sin(Math.PI*t);
+    pts.push([b[0]+ux*L*t+nx*w, b[1]+uy*L*t+ny*w]); }
+  for(let i=10;i>=0;i--){ const t=i/10, w=Math.sin(Math.PI*t)*wid-curl*Math.sin(Math.PI*t);
+    pts.push([b[0]+ux*L*t-nx*w, b[1]+uy*L*t-ny*w]); }
+  return pts;
+}
+const discPt=(S,a,k,z=0)=>{
+  const q=project(S,[S.rx*k*Math.cos(a),S.ry*k*Math.sin(a),S.rz*z]);
+  return [q[0],q[1]];
+};
+
+/* ── centres ─────────────────────────────────────────────────────────── */
+function flowerCentre(S,r,unit,g){
+  const rr=R(r), cR=g.cR, kind=g.centre;
+  if(kind==="none") return;
+  if(kind==="eye"){
+    const A={x:0,y:0,...axes(S)};
+    eye(A,r,1,{size:S.rx*cR*0.60,style:g.eyeStyle,lid:anim.lid});
+    return;
+  }
+  if(kind==="teeth"){                          // a ring of little fangs
+    const n=Math.round(rr(9,15));
+    for(let i=0;i<n;i++){
+      const a=i/n*6.2832;
+      const p=[discPt(S,a-0.10,cR*0.55),discPt(S,a+0.10,cR*0.55),discPt(S,a,cR*1.02)];
+      fillPts(p,INK,0.9); stroke(p,r,{w:1.1,close:true,amp:0.03});
+    }
+    return;
+  }
+  if(kind==="stamens"){
+    /* Poppy: a tight dark ANNULUS of stamens round a pale capsule — the ring is
+       the read, not a filled dot. */
+    const n=Math.round(rr(34,54));
+    for(let i=0;i<n;i++){
+      const a=rr(0,6.2832), k0=cR*rr(0.34,0.55), k1=cR*rr(0.86,1.10);
+      stroke([discPt(S,a,k0),discPt(S,a+rr(-0.10,0.10),k1)],r,
+        {w:rr(1.0,2.0),alpha:rr(0.7,1.0),amp:0.05});
+    }
+    const cap=arc(...discPt(S,0,0),S.rx*cR*0.36,S.ry*cR*0.30,0,6.29,18);
+    fillPts(cap,PAPER,0.95); stroke(cap,r,{w:1.5,close:true,amp:0.03});
+    for(let i=0;i<Math.round(rr(5,9));i++){     // the capsule's dark crown
+      const a=i/7*6.2832;
+      stroke([discPt(S,a,cR*0.10),discPt(S,a,cR*0.32)],r,{w:1.2,alpha:0.8,amp:0.05});
+    }
+    return;
+  }
+  if(kind==="cone"){
+    /* Coneflower: a domed cushion whose florets break its own outline. */
+    const dome=arc(...discPt(S,0,0),S.rx*cR*0.98,S.ry*cR*0.82,0,6.29,26);
+    fillPts(dome,PAPER,0.9); stroke(dome,r,{w:2.0,close:true,amp:0.020});
+    clipTo(dome,()=>pencilShade(S,r,unit,INK,
+      {v0:-0.35,v1:0.35,dens:1.5,alpha:1.2,medium:"shade"}));
+    const n=Math.round(rr(30,46));
+    for(let i=0;i<n;i++){                       // spikes past the silhouette
+      const a=i/n*6.2832+rr(-0.05,0.05);
+      stroke([discPt(S,a,cR*0.80),discPt(S,a,cR*rr(1.02,1.20))],r,
+        {w:rr(1.0,1.7),alpha:rr(0.75,1.0),amp:0.06});
+    }
+    return;
+  }
+  // "cushion" and "tubes": the composite disc, on the golden angle
+  const n=Math.round((kind==="tubes"?rr(150,260):rr(90,170)));
+  for(let i=0;i<n;i++){
+    const f=Math.sqrt((i+0.5)/n), a=i*GOLDEN, k=f*cR;
+    if(kind==="tubes"){
+      // outward-pointing florets, growing as they go: what the macro showed
+      const L=cR*0.055*(0.30+f);
+      stroke([discPt(S,a,k),discPt(S,a,k+L)],r,
+        {w:0.8+1.5*f,alpha:rr(0.55,1.0),amp:0.04});
+    }else{
+      const rad=S.rx*cR*0.075*(0.45+0.75*f);
+      fillPts(arc(...discPt(S,a,k),rad,rad*0.9,0,6.29,7),INK,rr(0.45,0.95));
+    }
+  }
+  const rim=arc(...discPt(S,0,0),S.rx*cR,S.ry*cR,0,6.29,24);
+  if(g.centreTint){
+    if(heavy()) clipTo(rim,()=>pencilShadeBox(rim,r,unit,g.centreTint,
+      {dens:1.1,alpha:0.9,medium:"colour"}));
+    else fillPts(rim,g.centreTint,0.28);
+  }
+  stroke(rim,r,{w:1.5,close:true,alpha:0.85,amp:0.022});
+}
+
+/* ── stem and leaves ─────────────────────────────────────────────────── */
+function flowerStem(S,r,unit,g){
+  const rr=R(r);
+  const top=discPt(S,Math.PI/2,0.30);
+  const len=unit*rr(0.70,1.12), bow=unit*rr(-0.14,0.18);
+  const pts=[];
+  for(let i=0;i<=9;i++){const t=i/9;
+    pts.push([top[0]+bow*t*t, top[1]+len*t]);}
+  if(g.leafTint) stroke(pts,r,{w:5.0,alpha:0.30,amp:0.020,col:g.leafTint});
+  stroke(pts,r,{w:2.6,amp:0.020});
+  if(g.bristly) for(let i=0;i<Math.round(rr(10,20));i++){
+    const t=rr(0.05,1), b=[top[0]+bow*t*t, top[1]+len*t], sd=r()<0.5?-1:1;
+    stroke([b,[b[0]+sd*unit*rr(0.010,0.022), b[1]-unit*rr(0.004,0.014)]],
+      r,{w:0.9,alpha:0.7,amp:0.06});
+  }
+  /* Foliage is pinned to the armature. Each leaf gets an angle round the
+     plant's vertical axis, so the pair swings and foreshortens with the pose
+     instead of being stamped left-and-right in page space. Sorted by depth so
+     the one behind the stem is drawn first. */
+  const shade=lp=>{
+    fillPts(lp,PAPER,0.9);
+    if(!g.leafTint) return;
+    if(heavy()) clipTo(lp,()=>pencilShadeBox(lp,r,unit,g.leafTint,
+      {dens:0.95,alpha:0.85,medium:"colour"}));
+    else fillPts(lp,g.leafTint,0.30);
+  };
+  /* Three candidate positions 120 degrees apart round the stem — alternate
+     leaves, roughly how a stem actually carries them — each with a chance of
+     being absent. */
+  const set=[];
+  for(let k=0;k<3;k++){
+    if(r()<(g.palmate?0.42:0.30)) continue;
+    const th=g.leafTh+k*2.0944+rr(-0.30,0.30);
+    const t=g.palmate?rr(0.50,0.94):rr(0.26,0.88);
+    set.push({th,t});
+  }
+  set.sort((a,b2)=>radialDir(S,a.th,1,0)[2]-radialDir(S,b2.th,1,0)[2]);
+
+  for(const {th,t} of set){
+    const b=[top[0]+bow*t*t, top[1]+len*t];
+    if(g.palmate){
+      /* Lupins carry palmate leaves: five to seven narrow leaflets radiating
+         from one point like a hand. Distinctive enough that an oval leaf would
+         give the whole thing away. */
+      let d=radialDir(S,th,rr(0.36,0.52),rr(0.10,0.30));
+      let reach=Math.hypot(d[0],d[1]);
+      const floor2=unit*0.075;
+      if(reach<1e-3) continue;
+      if(reach<floor2){ const k2=floor2/reach; d=[d[0]*k2,d[1]*k2,d[2]]; reach=floor2; }
+      const base=Math.atan2(d[1],d[0]);
+      const nl=Math.round(rr(5,7.99));
+      for(let i=0;i<nl;i++){
+        const a=base+(i/(nl-1)-0.5)*1.45;
+        const L=reach*rr(0.72,1.05);
+        const lp=leafBlade(b,Math.cos(a)*L,Math.sin(a)*L,unit*0.016,0);
+        shade(lp); stroke(lp,r,{w:1.6,close:true,amp:0.024});
+      }
+      continue;
+    }
+    let d=radialDir(S,th,rr(0.46,0.78),rr(0.18,0.44));
+    /* Foreshortening is the point, but a leaf pointing dead at the viewer would
+       collapse to nothing. Hold it to a floor so it still reads as a leaf. */
+    const pl=Math.hypot(d[0],d[1]), floor=unit*0.085;
+    if(pl<1e-3) continue;
+    if(pl<floor){ const k2=floor/pl; d=[d[0]*k2,d[1]*k2,d[2]]; }
+    const lp=leafBlade(b,d[0],d[1],unit*rr(0.032,0.056),unit*rr(-0.03,0.03));
+    shade(lp); stroke(lp,r,{w:1.8,close:true,amp:0.024});
+    stroke([b,[b[0]+d[0]*0.92,b[1]+d[1]*0.92]],r,{w:1.0,alpha:0.7,amp:0.03});
+  }
+}
+
+/* ── bluebonnet ──────────────────────────────────────────────────────────
+   From the photograph: a vertical SPIKE, florets set in whorled tiers round the
+   stalk and pointing outward and slightly down, each one a rounded pea banner
+   carrying a pale eye that goes magenta with age. The tip is a tight cluster of
+   unopened cream buds pointing up, and the tiers loosen toward the bottom.
+
+   Positions are taken round the spike's own axis and projected, so the florets
+   on the far side foreshorten and sit behind — same trick as the petals, one
+   axis over. */
+function drawSpike(S,r,unit,g){
+  const rr=R(r);
+  const P=(y,th,rad)=>project(S,[S.rx*rad*Math.sin(th), S.ry*y, S.rz*rad*Math.cos(th)]);
+  const top=-1.75*g.tall, bot=1.35;   // the spike gets the taller cell too
+  const stalk=[], lean=rr(-0.10,0.10);
+  for(let i=0;i<=8;i++){const t=i/8;
+    const q=P(top+(bot-top)*t,lean*t,0); stalk.push([q[0],q[1]]);}
+  stroke(stalk,r,{w:2.8,amp:0.02});
+
+  const tiers=Math.round(rr(g.tiers[0],g.tiers[1]+0.99)), all=[];
+  for(let i=0;i<tiers;i++){
+    const t=i/(tiers-1);
+    const y=top+0.34+(bot-top-0.34)*t;
+    const per=Math.round(rr(3,5.99));
+    const twist=i*2.399+rr(-0.2,0.2);            // each tier turned off the last
+    for(let k=0;k<per;k++){
+      const th=twist+k/per*6.2832+rr(-0.28,0.28);
+      const rad=(0.40+0.50*t)*rr(0.78,1.22);     // looser lower down
+      all.push({y:y+rr(-0.05,0.05),th,rad,age:t});
+    }
+  }
+  all.sort((a,b)=>P(a.y,a.th,a.rad)[2]-P(b.y,b.th,b.rad)[2]);
+  for(const f of all){
+    const base=P(f.y,f.th,f.rad*0.30), tip=P(f.y+rr(0.02,0.09),f.th,f.rad);
+    stroke([[base[0],base[1]],[tip[0],tip[1]]],r,{w:1.3,alpha:0.8,amp:0.05});
+    const w=unit*rr(0.036,0.058)*g.fat, h=unit*rr(0.030,0.050)*g.fat;
+    // a lopsided banner, not a bead: wider on one side and tilted off true
+    const tw=rr(-0.7,0.7), ban=[];
+    for(let k=0;k<=18;k++){
+      const a2=k/18*6.2832, sq=1+0.24*Math.cos(a2+1.1);
+      const dx=Math.cos(a2)*w*sq, dy=Math.sin(a2)*h*sq*(a2<Math.PI?1.12:0.88);
+      ban.push([tip[0]+dx*Math.cos(tw)-dy*Math.sin(tw),
+                tip[1]+dx*Math.sin(tw)+dy*Math.cos(tw)]);
+    }
+    if(g.tex==="solid") fillPts(ban,INK,0.92);
+    else { fillPts(ban,PAPER,0.95);
+           clipTo(ban,()=>pencilShadeBox(ban,r,unit,INK,
+             {dens:1.0,alpha:0.95,medium:"pencil"})); }
+    stroke(ban,r,{w:1.7,close:true,amp:0.024});
+    if(g.tint){
+      if(heavy()) clipTo(ban,()=>pencilShadeBox(ban,r,unit,g.tint,
+        {dens:1.2,alpha:1.0,medium:"colour"}));
+      else fillPts(ban,g.tint,0.30);
+    }
+    // the pale eye, which the photograph shows turning as the floret ages
+    const ex=tip[0]+rr(-0.30,0.10)*w, ey=tip[1]-rr(0.10,0.40)*h;
+    const spot=arc(ex,ey,w*rr(0.26,0.40),h*rr(0.24,0.38),0,6.29,10,tw);
+    fillPts(spot,PAPER,0.95);
+    if(f.age>0.55) clipTo(spot,()=>pencilShadeBox(spot,r,unit,TINTS[2],
+      {dens:1.4,alpha:1.2,medium:"colour"}));
+    stroke(spot,r,{w:1.0,alpha:0.7,amp:0.04});
+  }
+  // the unopened cream buds crowding the tip
+  const nb=Math.round(rr(5,9.99));
+  for(let i=0;i<nb;i++){
+    const th=i*2.399, y=top+rr(0.0,0.26), rad=rr(0.06,0.22);
+    const q=P(y,th,rad);
+    const bud=arc(q[0],q[1],unit*rr(0.016,0.026),unit*rr(0.022,0.034),0,6.29,12,rr(-0.4,0.4));
+    fillPts(bud,PAPER,0.95); stroke(bud,r,{w:1.4,close:true,amp:0.03});
+  }
+}
+
+const FLOWER_KINDS={
+  daisy:      {form:"ray", n:[26,40], pet:"blunt",  hw:0.82, r0:0.30, centre:"cushion", cR:0.30, ranks:2, crease:1},
+  aster:      {form:"ray", n:[18,28], pet:"strap",  hw:0.78, r0:0.26, centre:"cushion", cR:0.26, ranks:2},
+  sunflower:  {form:"ray", n:[17,25], pet:"pointed",hw:0.90, r0:0.46, centre:"tubes",   cR:0.46},
+  coneflower: {form:"ray", n:[13,19], pet:"notch",  hw:0.82, r0:0.30, centre:"cone",    cR:0.30, lift:-0.60, vein:1},
+  poppy:      {form:"ray", n:[4,4],   pet:"broad",  hw:1.55, r0:0.06, centre:"stamens", cR:0.20, crumple:1, bristly:1},
+  cosmos:     {form:"ray", n:[8,8],   pet:"notch",  hw:1.02, r0:0.22, centre:"cushion", cR:0.22, vein:1},
+  iris:       {form:"iris"},
+  tulip:      {form:"cup"},
+  bluebell:   {form:"bells"},
+  bluebonnet: {form:"spike", palmate:1, tiers:[7,11],  fat:1.00, tall:1.00},
+  lupin:      {form:"spike", palmate:1, tiers:[11,16], fat:1.28, tall:1.30},
+  // ── and the funk ──
+  pinwheel:   {form:"ray", n:[7,11],  pet:"strap",  hw:0.72, r0:0.20, centre:"cushion", cR:0.20, bend:0.72},
+  eyebloom:   {form:"ray", n:[10,15], pet:"blunt",  hw:0.82, r0:0.32, centre:"eye",     cR:0.32},
+  spikeball:  {form:"ray", n:[22,34], pet:"pointed",hw:0.78, r0:0.12, centre:"none",    cR:0.12},
+  toothbloom: {form:"ray", n:[9,13],  pet:"frill",  hw:0.96, r0:0.24, centre:"teeth",   cR:0.24},
+  wilted:     {form:"ray", n:[6,9],   pet:"paddle", hw:0.92, r0:0.16, centre:"cushion", cR:0.16, lift:-0.95},
+};
+const FLOWER_NAMES=Object.keys(FLOWER_KINDS);
+
+const FLOWER={
+  name:"Flowers", solid:"tilted disc", rows:3,
+  shapes:["round","round","round","lopsided","lumpy","harmonic","wide","egg"],
+  build(r,S){
+    const rr=R(r), pick=PICK(r), ch=CHANCE(r);
+    const kind=pick(FLOWER_NAMES), K=FLOWER_KINDS[kind];
+    const n=K.n?Math.round(rr(K.n[0],K.n[1]+0.99)):0;
+    return { kind, form:K.form, n,
+      pet:K.pet, r0:K.r0, centre:K.centre||"none", cR:K.cR||0.2,
+      // hw arrives as a fraction of the angular slot, so 1.0 means the petals
+      // just touch and anything above overlaps — which is what a poppy does
+      hw:(K.hw||0.8)*Math.PI/Math.max(3,n),
+      ranks:K.ranks||1, crease:!!K.crease, vein:!!K.vein, crumple:!!K.crumple,
+      bristly:!!K.bristly, bend:K.bend||0, lift:K.lift||0, palmate:!!K.palmate,
+      tiers:K.tiers||[7,11], fat:K.fat||1, tall:K.tall||1,
+      /* Real heads are not lathe-turned. Petals sit at uneven angles, run to
+         different lengths and widths, droop by different amounts, and a bloom
+         of any age has usually lost one — a gap in the ring reads as far more
+         alive than a perfect rosette does. */
+      jit:Array.from({length:Math.max(1,n)},()=>({
+        da:rr(-0.60,0.60), dl:rr(-0.20,0.13), dw:rr(-0.26,0.26),
+        dz:rr(-0.40,0.40), gone:r()<0.06, torn:r()<0.11 })),
+      cx:rr(-0.022,0.022), cy:rr(-0.022,0.022), rise:rr(0.28,0.42),
+      spin:rr(0,6.2832), jag:rr(0.03,0.13),
+      tex:pick(TEXTURES), eyeStyle:pick(EYES),
+      tint:ch(0.74)?pick(TINTS):null,
+      leafTint:ch(0.80)?pick(FOLIAGE):null,
+      centreTint:ch(0.55)?pick(POLLEN):null,
+      leafTh:rr(0,6.2832),                     // where the leaves sit round the stem
+      stem:ch(0.78), shade:ch(0.45)
+    };
+  },
+  gates:[
+    // a bloom needs petals or a centre — ideally both
+    ["empty", g=> g.form!=="ray" || g.n>0 || g.centre!=="none"],
+    // an eye on a black disc is an eye nobody can see
+    ["blind", g=> !(g.centre==="eye" && g.tex==="solid")]
+  ],
+  tag: g=>g.kind,
+
+  draw(r,S,g,unit){
+    const rr=R(r);
+    // lift the head so a longer stem has somewhere to go
+    if(g.stem && g.form!=="bells" && g.form!=="spike") ctx.translate(0,-unit*g.rise);
+    if(g.form==="spike"){ if(g.stem) flowerStem(S,r,unit,g); drawSpike(S,r,unit,g); return; }
+    if(g.stem && g.form!=="bells") flowerStem(S,r,unit,g);
+
+    if(g.form==="cup"){
+      /* Tulip: a closed spindle. Tepals wrapped, so what reads is the ogive
+         silhouette plus the long vertical seams, and a slightly frayed point. */
+      const w=S.rx*rr(0.62,0.86), h=S.ry*rr(1.05,1.30);
+      const side=t=>Math.pow(Math.sin(Math.PI*Math.pow(t,0.72)),0.62);
+      const pts=[];
+      for(let i=0;i<=16;i++){const t=i/16;
+        pts.push([-w*side(t), h*(1-2*t)]);}
+      for(let i=16;i>=0;i--){const t=i/16;
+        pts.push([ w*side(t), h*(1-2*t)]);}
+      const bud=pts.map(q=>project(S,[q[0],q[1],0]).slice(0,2));
+      if(g.tex==="solid") fillPts(bud,INK,0.95);
+      else { fillPts(bud,PAPER); clipTo(bud,()=>texture(g.tex,S,r,unit,{dens:1.2})); }
+      stroke(bud,r,{w:3.0,passes:2,close:true,amp:0.014});
+      for(const sx of [-0.42,0.05,0.5]){        // the wrap seams
+        const sp=[];
+        for(let i=2;i<=15;i++){const t=i/16;
+          sp.push(project(S,[sx*w*side(t)*0.92, h*(1-2*t),0]).slice(0,2));}
+        stroke(sp,r,{w:1.4,alpha:0.8,amp:0.02});
+      }
+      if(g.tint) clipTo(bud,()=>pencilShade(S,r,unit,g.tint,
+        {dens:1.3,alpha:1.05,medium:"colour"}));
+      return;
+    }
+
+    if(g.form==="bells"){
+      /* Bluebell: the stem arches and the bells hang along ONE side. */
+      const sd=r()<0.5?-1:1;
+      const arc0=[];
+      for(let i=0;i<=12;i++){const t=i/12;
+        arc0.push([sd*S.rx*(1.15*t-0.15), -S.ry*0.85+S.ry*1.5*t*t]);}
+      const spine=arc0.map(q=>project(S,[q[0],q[1],0]).slice(0,2));
+      stroke(spine,r,{w:2.6,amp:0.02});
+      const n=Math.round(rr(4,8));
+      for(let i=0;i<n;i++){
+        const t=0.18+0.72*i/Math.max(1,n-1);
+        const b=spine[Math.round(t*12)];
+        const L=unit*rr(0.10,0.17), W=unit*rr(0.020,0.032);
+        const bell=[];                          // narrow tube, hanging
+        for(let k=0;k<=8;k++){const u=k/8;
+          bell.push([b[0]-W*(0.45+0.55*Math.sin(Math.PI*Math.min(1,u*1.1))), b[1]+L*u]);}
+        for(let k=8;k>=0;k--){const u=k/8;
+          bell.push([b[0]+W*(0.45+0.55*Math.sin(Math.PI*Math.min(1,u*1.1))), b[1]+L*u]);}
+        fillPts(bell,PAPER,0.92);
+        clipTo(bell,()=>pencilShadeBox(bell,r,unit,INK,
+          {dens:0.9,alpha:0.8,medium:g.tex==="solid"?"shade":"pencil"}));
+        stroke(bell,r,{w:2.0,close:true,amp:0.02});
+        for(const s2 of [-1,1]) for(const kk of [0.5,1.0])   // tips curling BACK
+          stroke([[b[0]+s2*W*kk*0.9,b[1]+L*0.92],
+                  [b[0]+s2*W*kk*2.2,b[1]+L*rr(1.06,1.22)],
+                  [b[0]+s2*W*kk*1.5,b[1]+L*rr(0.74,0.90)]],
+            r,{w:1.5,alpha:0.95,amp:0.06});
+        if(g.tint){
+          if(heavy()) clipTo(bell,()=>pencilShadeBox(bell,r,unit,g.tint,
+            {dens:1.1,alpha:1.05,medium:"colour"}));
+          else fillPts(bell,g.tint,0.30);
+        }
+      }
+      return;
+    }
+
+    if(g.form==="iris"){
+      /* Three standards arching UP and inward, three falls hanging DOWN and
+         out, each fall carrying a pale beard. Nothing about this is a ring. */
+      /* First attempt spaced all six petals evenly at 120 degrees and got a
+         six-petal rosette — the exact mistake the photograph warned against.
+         An iris is organised VERTICALLY: three falls hang down and out, three
+         standards stand up and arch inward. Both groups cluster in their own
+         half of the page, they do not share a ring. */
+      const DOWN=Math.PI/2, UP=-Math.PI/2;
+      const grp=(base,offs,lift,style,hw,rad,wt)=>{
+        for(const o of offs){
+          const a=base+o+rr(-0.07,0.07);
+          const p=petalPts(S,a,0.10,rad*rr(0.92,1.06),hw,style,rr(-0.10,0.10),lift);
+          if(g.tex==="solid") fillPts(p,INK,0.92);
+          else { fillPts(p,PAPER,0.95);
+                 clipTo(p,()=>pencilShadeBox(p,r,unit,INK,
+                   {dens:0.9,alpha:0.8,medium:"pencil"})); }
+          stroke(p,r,{w:wt,close:true,amp:0.018});
+          for(let k=-1;k<=1;k++)                // lengthwise veining
+            stroke([discPt(S,a+k*hw*0.45,0.16),discPt(S,a+k*hw*0.52,rad*0.88)],
+              r,{w:1.0,alpha:0.55,amp:0.03});
+          if(g.tint) clipTo(p,()=>pencilShadeBox(p,r,unit,g.tint,
+            {dens:1.15,alpha:1.0,medium:"colour"}));
+        }
+      };
+      const FALLS=[-0.90,0,0.90], STANDS=[-0.80,0,0.80];
+      grp(DOWN, FALLS, -0.55, "paddle", 0.62, 1.04, 2.6);   // falls, drawn first
+      grp(UP,  STANDS,  0.75, "broad",  0.50, 0.68, 2.4);   // standards, in front
+      for(const o of FALLS){                     // the pale beard, on the falls
+        const a=DOWN+o;
+        for(let k=0;k<8;k++) stroke([discPt(S,a+rr(-0.09,0.09),0.20+k*0.052),
+          discPt(S,a+rr(-0.09,0.09),0.25+k*0.052)],r,{w:1.5,alpha:0.8,amp:0.06});
+      }
+      return;
+    }
+
+    /* ── radial heads ──────────────────────────────────────────────────
+       Depth-sorted so the near petals lie over the far ones, which is the only
+       thing that makes a tilted head read as a solid object rather than a
+       flat rosette. */
+    const slot=Math.PI/Math.max(3,g.n);
+    const order=[];
+    for(let i=0;i<g.n;i++){
+      if(g.jit[i].gone) continue;                 // a missing petal
+      const a=i/g.n*6.2832+g.spin+g.jit[i].da*slot;
+      order.push({a, i, z:project(S,[S.rx*0.8*Math.cos(a),S.ry*0.8*Math.sin(a),0])[2]});
+    }
+    order.sort((p,q)=>p.z-q.z);
+
+    for(let rank=(heavy()?g.ranks-1:0);rank>=0;rank--){
+      const off=rank*slot*0.85, sc=rank?0.86:1;
+      for(const {a,i} of order){
+        const J=g.jit[i];
+        const r1=((rank?0.90:1.01)+J.dl)*sc + (g.crumple?rr(-0.06,0.06):0)
+                 - (J.torn?rr(0.10,0.24):0);
+        const p=petalPts(S,a+off,g.r0,r1,g.hw*(rank?0.9:1)*(1+J.dw),g.pet,
+                         g.bend+rr(-g.jag,g.jag)*0.3, g.lift*(1+J.dz));
+        if(g.tex==="solid") fillPts(p,INK,0.92);
+        else {
+          fillPts(p,PAPER,0.94);
+          if(g.shade && heavy()) clipTo(p,()=>pencilShadeBox(p,r,unit,INK,
+            {dens:0.7,alpha:0.65,medium:"pencil"}));
+        }
+        stroke(p,r,{w:rank?1.9:2.5,close:true,amp:0.016});
+        if(g.crease)                            // the daisy's central fold
+          stroke([discPt(S,a+off,g.r0+0.05),discPt(S,a+off,r1*0.90)],
+            r,{w:1.0,alpha:0.5,amp:0.03});
+        if(g.vein) for(const k of [-0.45,0,0.45])
+          stroke([discPt(S,a+off+k*g.hw,g.r0+0.04),
+                  discPt(S,a+off+k*g.hw*1.1,r1*0.88)],r,{w:0.9,alpha:0.45,amp:0.03});
+        if(g.crumple) for(let c=0;c<4;c++){     // poppy tissue creases
+          const kk=rr(-0.75,0.75);
+          stroke([discPt(S,a+off+kk*g.hw,g.r0+0.05),
+                  discPt(S,a+off+kk*g.hw*1.25,r1*rr(0.72,0.96))],
+            r,{w:1.0,alpha:rr(0.35,0.7),amp:0.04});
+        }
+        if(g.tint && (heavy()||i%2===0)) clipTo(p,()=>pencilShadeBox(p,r,unit,g.tint,
+          {dens:rr(0.9,1.3),alpha:1.0,medium:"colour"}));
+      }
+    }
+    ctx.save(); ctx.translate(g.cx*unit,g.cy*unit);   // discs sit off-centre
+    flowerCentre(S,r,unit,g);
+    ctx.restore();
+  }
+};
+
+const SUBJECTS=[HEAD,CAT,FLOWER,OWL,BEETLE];
+let subject=0, sheetSeed=Math.floor(Math.random()*1e9), cellSeeds=[], turn=0, showArm=false;
+let gateHits={}, gateTotal=0, gaveUp=0;     // what the rules layer threw away
+let toolTally={};                           // which utensils this sheet used
+/* Which reroll passed the gates, per cell. The outcome is seed-driven and does
+   not change from frame to frame, but the loop was re-running up to MAX_TRIES
+   builds per cell EVERY frame to rediscover it. Caching the winning index means
+   an animated frame does exactly one build per cell. */
+let tryCache=new Map();
+
+/* ── paper: built once, reused. No image assets. ─────────────────────────
+   Fibre, blotch, crumple — and cloud, which turned out to be most of it. */
+let paperTex=null;
+
+/* One octave of value noise. Built the cheap way: fill a tiny canvas with one
+   random value per cell and let the browser's own bilinear upscale do the
+   interpolation for free. Warm greys darken, near-whites lift. */
+function cloudOctave(c,w,h,cells,alpha,r,dark){
+  const t=document.createElement("canvas");
+  t.width=cells; t.height=Math.max(2,Math.round(cells*h/w));
+  const tc=t.getContext("2d");
+  for(let y=0;y<t.height;y++) for(let x=0;x<t.width;x++){
+    tc.fillStyle=dark?`rgba(152,142,120,${r()})`:`rgba(255,253,247,${r()})`;
+    tc.fillRect(x,y,1,1);
+  }
+  c.save(); c.globalAlpha=alpha; c.imageSmoothingEnabled=true;
+  c.drawImage(t,0,0,w,h); c.restore();
+}
+function makePaper(w,h){
+  const p=document.createElement("canvas"); p.width=w; p.height=h;
+  const c=p.getContext("2d");
+  c.fillStyle=PAPER; c.fillRect(0,0,w,h);
+  const r=rng(7);
+  /* Cloud, coarse to fine. This is the thing that was missing: a flat colour
+     with dots on it reads as a canvas element, whereas a few octaves of slow
+     tonal drift read as a sheet of paper that has been somewhere. Warm greys
+     for the hollows, near-white for the highs, so it mottles in both
+     directions rather than just getting dirty. */
+  cloudOctave(c,w,h, 4,0.15,r,true);
+  cloudOctave(c,w,h, 6,0.17,r,false);
+  cloudOctave(c,w,h,11,0.11,r,true);
+  cloudOctave(c,w,h,25,0.07,r,true);
+  for(let i=0;i<26000;i++){                      // fine tooth
+    const x=r()*w,y=r()*h,a=r()*0.05;
+    c.fillStyle=r()<0.5?`rgba(90,80,60,${a})`:`rgba(255,255,255,${a*1.4})`;
+    c.fillRect(x,y,1.3,1.3);
+  }
+  for(let i=0;i<260;i++){                        // longer fibres
+    const x=r()*w,y=r()*h,L=8+r()*46,a=r()*6.28;
+    c.strokeStyle=`rgba(120,105,80,${0.03+r()*0.05})`; c.lineWidth=0.9;
+    c.beginPath(); c.moveTo(x,y); c.lineTo(x+Math.cos(a)*L,y+Math.sin(a)*L); c.stroke();
+  }
+  for(let i=0;i<15;i++){                         // faint blotches
+    const x=r()*w,y=r()*h,rad=90+r()*260;
+    const gd=c.createRadialGradient(x,y,0,x,y,rad);
+    gd.addColorStop(0,`rgba(150,130,100,${0.02+r()*0.03})`); gd.addColorStop(1,"rgba(150,130,100,0)");
+    c.fillStyle=gd; c.fillRect(x-rad,y-rad,rad*2,rad*2);
+  }
+  /* Crumple. The thing that makes a crease read as a crease rather than a
+     scratch is that it comes in PAIRS: the ridge catches the light on one side
+     and shadows on the other, one pixel apart. Drawn twice, offset, at very low
+     alpha — a sheet that has been folded once and flattened out again, not
+     screwed into a ball. */
+  for(let i=0;i<9;i++){
+    const x0=r()*w, y0=r()*h, a=r()*6.2832, L=h*(0.45+r()*0.95), bow=w*0.010;
+    const seg=[], n=18;
+    for(let k=0;k<=n;k++){                       // a crease wanders, never rules
+      const t=k/n, s2=Math.sin(t*3.4+i*1.7)*bow + Math.sin(t*9+i)*bow*0.35;
+      seg.push([x0+Math.cos(a)*L*t + Math.sin(a)*s2,
+                y0+Math.sin(a)*L*t - Math.cos(a)*s2]);
+    }
+    for(const [dx,dy,rgb,al] of [[-1,-1,"255,255,255",0.055],[1,1,"92,82,62",0.048]]){
+      c.strokeStyle=`rgba(${rgb},${al})`; c.lineWidth=1.7;
+      c.beginPath();
+      seg.forEach((q,k)=>k?c.lineTo(q[0]+dx,q[1]+dy):c.moveTo(q[0]+dx,q[1]+dy));
+      c.stroke();
+    }
+  }
+  for(let i=0;i<4;i++){                          // broad soft panels between creases
+    const x=r()*w, y=r()*h, rad=w*(0.28+r()*0.30);
+    const gd=c.createRadialGradient(x,y,0,x,y,rad);
+    gd.addColorStop(0,`rgba(255,255,255,${0.016+r()*0.014})`);
+    gd.addColorStop(1,"rgba(255,255,255,0)");
+    c.fillStyle=gd; c.fillRect(x-rad,y-rad,rad*2,rad*2);
+  }
+  for(let i=0;i<34;i++){                         // foxing: small age blooms
+    const x=r()*w, y=r()*h, rad=3+r()*17;
+    const gd=c.createRadialGradient(x,y,0,x,y,rad);
+    gd.addColorStop(0,`rgba(148,116,76,${0.05+r()*0.10})`);
+    gd.addColorStop(0.55,`rgba(148,116,76,${0.02+r()*0.05})`);
+    gd.addColorStop(1,"rgba(148,116,76,0)");
+    c.fillStyle=gd; c.fillRect(x-rad,y-rad,rad*2,rad*2);
+  }
+  // the edges of a sheet see more handling than the middle
+  const vg=c.createRadialGradient(w/2,h/2,Math.min(w,h)*0.28,
+                                  w/2,h/2,Math.max(w,h)*0.70);
+  vg.addColorStop(0,"rgba(94,84,66,0)");
+  vg.addColorStop(1,"rgba(94,84,66,0.09)");
+  c.fillStyle=vg; c.fillRect(0,0,w,h);
+  return p;
+}
+
+function drawArmature(S,unit){
+  ctx.save(); ctx.globalAlpha=0.5; ctx.strokeStyle=TINTS[0]; ctx.lineWidth=1;
+  for(let k=-2;k<=2;k++){                         // latitudes
+    const v=k/3, pts=[];
+    for(let i=0;i<=44;i++){const q=project(S,onSolid(S,i/44,v)); if(mul(S.M,normalAt(S,i/44,v))[2]>0) pts.push(q);}
+    ctx.beginPath(); pts.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])); ctx.stroke();
+  }
+  for(let k=0;k<6;k++){                           // longitudes
+    const u=k/12, pts=[];
+    for(let i=0;i<=24;i++){const v=-1+2*i/24; const q=project(S,onSolid(S,u,v));
+      if(mul(S.M,normalAt(S,u,v))[2]>0) pts.push(q);}
+    ctx.beginPath(); pts.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawCell(idx){
+  const W=cv.width, H=cv.height, cw=W/cols, chh=H/rows;
+  const cx=(idx%cols+0.5)*cw, cy=(Math.floor(idx/cols)+0.5)*chh;
+  const S0=SUBJECTS[subject], seed=cellSeeds[idx];
+
+  /* Geometry first, on its own stream, so the gates below are allowed to look
+     at the solid without their rerolls disturbing the pose.
+
+     Height is normalised: ry is fixed, width and depth vary. So a long
+     specimen reads as NARROW rather than bigger — character without footprint
+     creep, which matters on a grid. (Yan Liu's fix.) */
+  const rg=rng((seed^0x5bf03635)>>>0), rrg=R(rg), pickg=PICK(rg);
+  // one utensil for this whole specimen — see the media library above
+  tool=pickg(MEDIA);
+  const fk=S0.fillK||[0.84,0.92];
+  const unit=Math.min(cw,chh)*rrg(fk[0],fk[1]);
+  const ry=unit*(S0.ryK||0.355);
+  /* Height stays normalised, but the footprint gets to be strange: a squat
+     wide skull and a narrow tall one are different animals, and holding both
+     at the same height keeps them from bullying the grid. */
+  const asp={norm:[0.78,1.04],norm2:[0.78,1.04],norm3:[0.78,1.04],
+             wide:[1.12,1.48], narrow:[0.56,0.72], deep:[0.90,1.10]}[
+             pickg(["norm","norm2","norm3","norm","wide","narrow","deep"])];
+  const rx=ry*rrg(asp[0],asp[1]), rz=ry*rrg(0.78,1.16);
+  /* Per-cell phase, so forty specimens do not move as one. Everything below
+     is a small offset on the POSE — the head looks around and the features come
+     with it for free, because they were never in page space to begin with. */
+  const ph=((seed>>>5)%1024)/1024*6.2832;
+  const T=animT;
+  anim.wig  = playing? Math.sin(T*0.90+ph)               : 0;
+  // the hair lags the head by a beat: secondary motion, and the whole reason
+  // a bounce reads as weight rather than as the drawing sliding about
+  anim.hair = playing? Math.sin(T*0.90+ph-0.75)          : 0;
+  anim.smile= playing? Math.pow(Math.max(0,Math.sin(T*0.33+ph*3.1)),3) : 0;
+  // a blink is a sharp pulse, not a sine: shut fast, open fast, then nothing
+  const bt=(T*0.42+ph*0.37)%1;
+  anim.lid  = playing&&bt<0.055? Math.sin(bt/0.055*Math.PI) : 0;
+
+  const yaw=(turn*Math.PI/180)+rrg(-0.5,0.5)+anim.wig*0.10;
+  const pitch=rrg(-0.26,0.22)+(playing?Math.sin(T*0.71+ph*1.7)*0.045:0);
+  const roll=rrg(-0.12,0.12)+(playing?Math.sin(T*0.53+ph*2.3)*0.035:0);
+  const S={rx,ry,rz,unit,M:rot(yaw,pitch,roll),
+           shape:pickg(S0.shapes||["round"]), r1:rg(),
+           // coefficients for the "harmonic" silhouette, kept small enough
+           // that the outline cannot fold through itself
+           harm:Array.from({length:4},(_,i)=>[rrg(0.02,0.105)/(1+i*0.55), rg()*6.283])};
+  toolTally[tool]=(toolTally[tool]||0)+1;
+
+  /* The rules layer, spec half: build, judge, reroll. `build` advances its own
+     rng and `draw` continues from where it stopped, so the accepted stream has
+     to be the one that gets handed on — not a fresh one from the same seed. */
+  let g=null, r=null, tries=0;
+  const ck=subject+":"+seed, hit=tryCache.get(ck);
+  if(hit!==undefined){                        // we already know which one won
+    r=rng((seed+hit*0x9E3779B9)>>>0); g=S0.build(r,S); tries=hit;
+  }else{
+    for(; tries<MAX_TRIES; tries++){
+      const rt=rng((seed+tries*0x9E3779B9)>>>0);
+      const cand=S0.build(rt,S);
+      const bad=(S0.gates||[]).find(([,ok])=>!ok(cand,S));
+      if(!bad){ g=cand; r=rt; break; }
+      gateHits[bad[0]]=(gateHits[bad[0]]||0)+1; gateTotal++;
+    }
+    if(g) tryCache.set(ck,tries);
+    else { r=rng(seed); g=S0.build(r,S); gaveUp++; }  // drawn anyway, and counted
+  }
+
+  ctx.save();
+  ctx.translate(cx+rrg(-cw*0.02,cw*0.02), cy+rrg(-chh*0.02,chh*0.02));
+  if(showArm) drawArmature(S,unit);
+  S0.draw(r,S,g,unit);
+  ctx.restore();
+}
+
+function render(){
+  const W=cv.width,H=cv.height;
+  if(!paperTex||paperTex.width!==W) paperTex=makePaper(W,H);
+  ctx.clearRect(0,0,W,H); ctx.drawImage(paperTex,0,0);
+  if(!tryCache.size){ gateHits={}; gateTotal=0; gaveUp=0; }
+  toolTally={};
+  for(let i=0;i<N;i++) drawCell(i);
+  document.getElementById("seedout").textContent=sheetSeed.toString(36);
+  document.getElementById("countout").textContent=N;
+  const hits=Object.entries(gateHits).sort((a,b)=>b[1]-a[1])
+    .map(([k,v])=>`${k} ${v}`).join(" · ");
+  document.getElementById("gateout").textContent =
+    gateTotal ? `${gateTotal} rejected — ${hits}${gaveUp?` · gave up ${gaveUp}`:""}`
+              : "nothing rejected";
+  document.getElementById("toolout").textContent =
+    Object.entries(toolTally).sort((a,b)=>b[1]-a[1])
+      .map(([k,v])=>`${k} ${v}`).join(" · ");
+  tool="pen";
+}
+function newSheet(){
+  tryCache.clear();
+  sheetSeed=Math.floor(Math.random()*1e9);
+  const r=rng(sheetSeed);
+  cellSeeds=Array.from({length:N},()=>Math.floor(r()*1e9));
+  render();
+}
+
+/* ── controls ─────────────────────────────────────────────────────────── */
+const tabs=document.getElementById("tabs");
+SUBJECTS.forEach((s,i)=>{
+  const b=document.createElement("button");
+  b.innerHTML=`${s.name}<span class="tab-solid">${s.solid}</span>`;
+  b.setAttribute("aria-pressed",i===0?"true":"false");
+  b.onclick=()=>{subject=i; gridFor(i); tryCache.clear();
+    [...tabs.children].forEach((c,j)=>c.setAttribute("aria-pressed",j===i?"true":"false"));
+    newSheet();};
+  tabs.appendChild(b);
+});
+/* ── the loop ─────────────────────────────────────────────────────────────
+   Pinned to 30fps rather than run flat out. Left uncapped, the frame rate
+   varied from 26 to 68 depending on the subject, and since the motion is driven
+   off wall-clock time the drawings all moved at the same SPEED but with visibly
+   different smoothness. A fixed budget is steadier and leaves the machine some
+   headroom.
+
+   The warm-up exists because the first second used to crawl. Two causes: the
+   JIT has not been through the drawing path yet, and the gate loop has not
+   filled its cache. Both are one-time costs, so they get paid up front behind a
+   label instead of being smeared over the opening of the animation. */
+const FPS=30, FRAME=1000/FPS, WARM=8;
+let animStart=0, lastFrame=0, warming=0;
+function frame(now){
+  if(!playing) return;
+  if(warming>0){
+    render();                                  // same path the animation uses
+    if(--warming===0){ animStart=now; lastFrame=0; playBtn.textContent="Pause"; }
+    else playBtn.textContent="Warming "+warming;
+    requestAnimationFrame(frame); return;
+  }
+  if(!animStart) animStart=now;
+  if(now-lastFrame>=FRAME-1.5){                // -1.5 so we do not miss a vsync
+    lastFrame=now; animT=(now-animStart)/1000; render();
+  }
+  requestAnimationFrame(frame);
+}
+const playBtn=document.getElementById("play");
+function setPlaying(v){
+  playing=v; playBtn.setAttribute("aria-pressed",v);
+  if(v){ warming=WARM; animStart=0; playBtn.textContent="Warming "+WARM;
+         requestAnimationFrame(frame); }
+  else { warming=0; animT=0; playBtn.textContent="Animate"; render(); }
+}
+playBtn.onclick=()=>setPlaying(!playing);
+document.getElementById("reroll").onclick=newSheet;
+document.getElementById("turn").oninput=e=>{turn=+e.target.value; render();};
+const armBtn=document.getElementById("armature");
+armBtn.onclick=()=>{showArm=!showArm; armBtn.setAttribute("aria-pressed",showArm); render();};
+cv.onclick=e=>{
+  const b=cv.getBoundingClientRect();
+  const col=Math.floor((e.clientX-b.left)/b.width*cols), row=Math.floor((e.clientY-b.top)/b.height*rows);
+  const i=row*cols+col; if(i<0||i>=N) return;
+  cellSeeds[i]=Math.floor(Math.random()*1e9);
+  render();
+};
+gridFor(subject);   // the first sheet needs its grid too
+newSheet();
+</script>
