@@ -8,8 +8,28 @@ Open it straight from Finder (`file://` works fine in a normal browser).
 Five subjects: **Heads**, **Cats**, **Flowers**, **Owls**, **Beetles**.
 Click any specimen to reroll just that one. Drag **Turn** to swivel the whole
 sheet. **Show armature** exposes the invisible solid. **Animate** brings it to
-life. The footer reports the sheet seed, which quality gates fired, and which
-utensils the sheet used.
+life. **512 pfp** switches to square tiles sized for a profile picture — click
+any tile to save it as a 512x512 PNG. The footer reports the sheet seed, which
+quality gates fired, and which utensils the sheet used.
+
+### 512 pfp mode
+
+A pfp is a square that most clients then crop to a **circle**, so a tile is
+composed fresh rather than cropped out of a sheet cell — the sheet deliberately
+jitters position, scale and turn, which is exactly wrong when the frame is the
+point. In pfp mode the specimen is centred, faces the viewer, and is scaled to
+the *circle* rather than the square.
+
+`pfpFill` and `pfpDrop` on a subject are **solved, not guessed**. For cats the
+extremes are the ear tips at `(+-0.19, -0.60)` units and the chin at `+0.355`;
+balancing top against bottom puts the origin `0.1225*unit` low of centre, and
+the binding constraint is the *off-axis* ear tip at `0.514*unit` from centre.
+That caps `unit` at `0.91*size`. Get this wrong and a round avatar slices the
+ears off.
+
+The dashed circle showing the crop is drawn onto the **preview only** — never
+into the tile, or it would be baked into the saved file. Each tile also gets
+its own paper seed, so two avatars never share blotch positions.
 
 ---
 

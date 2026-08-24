@@ -52,6 +52,7 @@
   </label>
   <button id="armature" aria-pressed="false">Show armature</button>
   <button id="play" aria-pressed="false">Animate</button>
+  <button id="pfp" aria-pressed="false">512 pfp</button>
   <button id="reroll">New sheet</button>
 </div>
 
@@ -98,7 +99,8 @@ const MAX_TRIES=14;                  // how many rerolls a cell gets before the 
    forty call sites keeps the heavy-outline / light-detail ratio intact. */
 const BOLD=1.14;
 
-const cv=document.getElementById("c"), ctx=cv.getContext("2d");
+const cv=document.getElementById("c");
+let ctx=cv.getContext("2d");   // reassigned while rendering offscreen tiles
 
 /* ── animation ────────────────────────────────────────────────────────────
    A full redraw of the sheet costs about 20ms, so this animates by genuinely
@@ -2026,7 +2028,12 @@ function catEar(S,r,unit,i,s,type,J,col){
 }
 
 const CAT={
-  name:"Cats", solid:"ellipsoid",
+  /* pfpFill/pfpDrop are solved, not guessed: a cat's extremes are the ear tips
+     at (+-0.19, -0.60) units and the chin at +0.355. Balancing top against
+     bottom puts the origin 0.1225*unit low of centre, and the binding
+     constraint is the OFF-AXIS ear tip, which sits at 0.514*unit from centre —
+     so unit must stay under 0.91*size for a round crop not to slice the ears. */
+  name:"Cats", solid:"ellipsoid", pfpFill:0.86, pfpDrop:0.105,
   shapes:["round","round","wide","wide","egg","square","peanut","lopsided",
            "pear","gourd","stone","slab","harmonic","mushroom"],
   build(r,S){
@@ -2869,9 +2876,14 @@ let toolTally={};                           // which utensils this sheet used
    an animated frame does exactly one build per cell. */
 let tryCache=new Map();
 
-/* ── paper: built once, reused. No image assets. ─────────────────────────
+/* ── paper: built once per size, reused. No image assets. ───────────────
    Fibre, blotch, crumple — and cloud, which turned out to be most of it. */
-let paperTex=null;
+const paperCache=new Map();
+function paperFor(w,h,seed=7){
+  const k=w+"x"+h+"@"+seed;
+  if(!paperCache.has(k)) paperCache.set(k,makePaper(w,h,seed));
+  return paperCache.get(k);
+}
 
 /* One octave of value noise. Built the cheap way: fill a tiny canvas with one
    random value per cell and let the browser's own bilinear upscale do the
@@ -2887,11 +2899,11 @@ function cloudOctave(c,w,h,cells,alpha,r,dark){
   c.save(); c.globalAlpha=alpha; c.imageSmoothingEnabled=true;
   c.drawImage(t,0,0,w,h); c.restore();
 }
-function makePaper(w,h){
+function makePaper(w,h,seed=7){
   const p=document.createElement("canvas"); p.width=w; p.height=h;
   const c=p.getContext("2d");
   c.fillStyle=PAPER; c.fillRect(0,0,w,h);
-  const r=rng(7);
+  const r=rng(seed);
   /* Cloud, coarse to fine. This is the thing that was missing: a flat colour
      with dots on it reads as a canvas element, whereas a few octaves of slow
      tonal drift read as a sheet of paper that has been somewhere. Warm greys
@@ -2977,6 +2989,99 @@ function drawArmature(S,unit){
   ctx.restore();
 }
 
+/* ── square export: profile pictures ────────────────────────────────────
+   A pfp is a square that most clients then crop to a CIRCLE, so the drawing
+   has to live inside the inscribed circle — whatever sits in the corners gets
+   thrown away.
+
+   That means composing fresh rather than cropping a cell out of the sheet. The
+   sheet deliberately jitters position, scale and turn, which is exactly wrong
+   when the frame is the whole point: here the specimen is centred, scaled to
+   the CIRCLE rather than the square, and turned only slightly, because a
+   profile picture facing away from the viewer is a bad profile picture. */
+const PFP_SIZE=512, PFP_N=12, PFP_COLS=4;
+let pfpMode=false, pfpTiles=[];
+
+function renderSquare(target,seed,S0,size){
+  const prev=ctx;
+  ctx=target.getContext("2d");
+  ctx.clearRect(0,0,size,size);
+  ctx.drawImage(paperFor(size,size,(seed%9973)+11),0,0);
+
+  const rg=rng((seed^0x5bf03635)>>>0), rrg=R(rg), pickg=PICK(rg);
+  tool=pickg(MEDIA);
+  const unit=size*(S0.pfpFill||0.66);
+  const ry=unit*(S0.ryK||0.355);
+  // narrower aspect spread than the sheet: a pfp wants a settled silhouette
+  const asp={norm:[0.80,1.02],wide:[1.06,1.24],narrow:[0.72,0.86]}[
+    pickg(["norm","norm","norm","wide","narrow"])];
+  const rx=ry*rrg(asp[0],asp[1]), rz=ry*rrg(0.84,1.10);
+  const S={rx,ry,rz,unit,
+    M:rot(rrg(-0.24,0.24),rrg(-0.10,0.10),rrg(-0.07,0.07)),
+    shape:pickg(S0.shapes||["round"]), r1:rg(),
+    harm:Array.from({length:4},(_,i)=>[rrg(0.02,0.105)/(1+i*0.55), rg()*6.283])};
+
+  let g=null,r=null;
+  for(let t=0;t<MAX_TRIES;t++){
+    const rt=rng((seed+t*0x9E3779B9)>>>0);
+    const cand=S0.build(rt,S);
+    if(!(S0.gates||[]).find(([,ok])=>!ok(cand,S))){ g=cand; r=rt; break; }
+  }
+  if(!g){ r=rng(seed); g=S0.build(r,S); }
+
+  ctx.save();
+  // ears and hats push the visible mass upward, so the drawing sits low of
+  // centre to put its actual middle in the middle of the frame
+  ctx.translate(size/2, size/2+size*(S0.pfpDrop||0));
+  S0.draw(r,S,g,unit);
+  ctx.restore();
+  ctx=prev;
+  return g;
+}
+function buildPFPs(){
+  pfpTiles=[];
+  const S0=SUBJECTS[subject];
+  for(let i=0;i<PFP_N;i++){
+    const c=document.createElement("canvas"); c.width=c.height=PFP_SIZE;
+    const g=renderSquare(c,cellSeeds[i],S0,PFP_SIZE);
+    pfpTiles.push({c,g,seed:cellSeeds[i]});
+  }
+}
+function renderPFPSheet(){
+  const W=cv.width,H=cv.height, rows=Math.ceil(PFP_N/PFP_COLS);
+  ctx.clearRect(0,0,W,H); ctx.drawImage(paperFor(W,H),0,0);
+  const cw=W/PFP_COLS, chh=H/rows, d=Math.min(cw,chh)*0.88;
+  pfpTiles.forEach((t,i)=>{
+    const cx=(i%PFP_COLS+0.5)*cw, cy=(Math.floor(i/PFP_COLS)+0.5)*chh;
+    ctx.drawImage(t.c, cx-d/2, cy-d/2, d, d);
+    /* The round-crop guide is drawn onto the PREVIEW only — never into the
+       tile itself, or it would be baked into the saved file. */
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx,cy,d/2,0,6.2832);
+    ctx.setLineDash([8,8]); ctx.lineWidth=2;
+    ctx.strokeStyle="rgba(180,101,74,0.5)"; ctx.stroke();
+    ctx.restore();
+  });
+  document.getElementById("seedout").textContent=sheetSeed.toString(36);
+  document.getElementById("countout").textContent=PFP_N;
+  document.getElementById("gateout").textContent=
+    `click a tile to save it at ${PFP_SIZE}\u00d7${PFP_SIZE}`;
+  document.getElementById("toolout").textContent=
+    "dashed circle = where a round avatar crops";
+}
+function savePFP(i){
+  const t=pfpTiles[i]; if(!t) return;
+  const S0=SUBJECTS[subject];
+  const tag=S0.tag?String(S0.tag(t.g)).replace(/[^a-z0-9]+/gi,"-"):"x";
+  t.c.toBlob(bl=>{
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(bl);
+    a.download=`${S0.name.toLowerCase()}-${tag}-${t.seed.toString(36)}-${PFP_SIZE}.png`;
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+  },"image/png");
+}
+
 function drawCell(idx){
   const W=cv.width, H=cv.height, cw=W/cols, chh=H/rows;
   const cx=(idx%cols+0.5)*cw, cy=(Math.floor(idx/cols)+0.5)*chh;
@@ -3052,9 +3157,9 @@ function drawCell(idx){
 }
 
 function render(){
+  if(pfpMode){ renderPFPSheet(); return; }
   const W=cv.width,H=cv.height;
-  if(!paperTex||paperTex.width!==W) paperTex=makePaper(W,H);
-  ctx.clearRect(0,0,W,H); ctx.drawImage(paperTex,0,0);
+  ctx.clearRect(0,0,W,H); ctx.drawImage(paperFor(W,H),0,0);
   if(!tryCache.size){ gateHits={}; gateTotal=0; gaveUp=0; }
   toolTally={};
   for(let i=0;i<N;i++) drawCell(i);
@@ -3074,7 +3179,8 @@ function newSheet(){
   tryCache.clear();
   sheetSeed=Math.floor(Math.random()*1e9);
   const r=rng(sheetSeed);
-  cellSeeds=Array.from({length:N},()=>Math.floor(r()*1e9));
+  cellSeeds=Array.from({length:Math.max(N,PFP_N)},()=>Math.floor(r()*1e9));
+  if(pfpMode) buildPFPs();
   render();
 }
 
@@ -3103,7 +3209,7 @@ SUBJECTS.forEach((s,i)=>{
 const FPS=30, FRAME=1000/FPS, WARM=8;
 let animStart=0, lastFrame=0, warming=0;
 function frame(now){
-  if(!playing) return;
+  if(!playing||pfpMode) return;
   if(warming>0){
     render();                                  // same path the animation uses
     if(--warming===0){ animStart=now; lastFrame=0; playBtn.textContent="Pause"; }
@@ -3128,8 +3234,23 @@ document.getElementById("reroll").onclick=newSheet;
 document.getElementById("turn").oninput=e=>{turn=+e.target.value; render();};
 const armBtn=document.getElementById("armature");
 armBtn.onclick=()=>{showArm=!showArm; armBtn.setAttribute("aria-pressed",showArm); render();};
+const pfpBtn=document.getElementById("pfp");
+pfpBtn.onclick=()=>{
+  pfpMode=!pfpMode;
+  pfpBtn.setAttribute("aria-pressed",pfpMode);
+  pfpBtn.textContent=pfpMode?"Exit pfp":"512 pfp";
+  if(pfpMode){ if(playing) setPlaying(false); buildPFPs(); }
+  render();
+};
 cv.onclick=e=>{
   const b=cv.getBoundingClientRect();
+  if(pfpMode){
+    const rows=Math.ceil(PFP_N/PFP_COLS);
+    const c2=Math.floor((e.clientX-b.left)/b.width*PFP_COLS);
+    const r2=Math.floor((e.clientY-b.top)/b.height*rows);
+    savePFP(r2*PFP_COLS+c2);
+    return;
+  }
   const col=Math.floor((e.clientX-b.left)/b.width*cols), row=Math.floor((e.clientY-b.top)/b.height*rows);
   const i=row*cols+col; if(i<0||i>=N) return;
   cellSeeds[i]=Math.floor(Math.random()*1e9);

@@ -135,6 +135,24 @@ playing=true; warming=WARM; animStart=0; lastFrame=0;
 let t=5000; for(let i=0;i<68;i++) frame(t+=16.7);   // 8 warm + 60 @60Hz => 30 renders
 ```
 
+## Square exports
+
+`renderSquare()` draws one specimen into an offscreen canvas at any size, for
+profile pictures. Two things it does that the sheet does not, and both matter:
+
+- **It composes for a circle, not a square.** Most clients crop an avatar
+  round, so the corners are thrown away. Solve for the largest `unit` whose
+  extremes stay inside the inscribed circle — and remember the binding
+  constraint is usually an *off-axis* extreme (a cat's ear tip), not the
+  topmost or widest point.
+- **It does not jitter.** No cell offset, minimal turn. The sheet's jitter is
+  character; in a fixed frame it is just miscomposition.
+
+`ctx` is a `let` so it can be pointed at an offscreen canvas — restore it in
+the same function or every later draw goes to the wrong place. Any preview
+decoration (crop guides) must be drawn when compositing onto the main canvas,
+never into the tile itself.
+
 ## Adding things
 
 **A texture** — add to `TEXTURES` (and `TEXINK` for the contrast gate; and
