@@ -42,3 +42,6 @@ drake/drake_data.xls
 # The tracked CLAUDE.md *is* this file's content — committing both would be a
 # duplicate. Keep it locally as the source you copy from.
 CLAUDE-portable.md
+
+# leverage: raw Retrosheet season + the parsed intermediate (both regenerable)
+leverage/data/
