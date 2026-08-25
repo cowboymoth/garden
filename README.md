@@ -13,7 +13,6 @@ Live: **https://cowboymoth.github.io/garden/**
 | [`leverage/`](leverage/) | **Leverage** — punch in a game state and see how much it can move: leverage index of the at-bat and of the next pitch, measured against winning the game, leading after 5, leading after 3, or scoring this inning. Published Retrosheet win/run tables, 2024 outcome rates. | open `leverage/index.html` |
 | [`odds-game/`](odds-game/) | A small odds-guessing game. | open `odds-game/index.html` |
 | [`art-auctions/`](art-auctions/) | Auction-lot pricing: estimates P(hammer > strike), calibrated against three 2026 sales. `CALIBRATION.md` documents the method. | `python3 art-auctions/price_lot.py` |
-| [`drake/`](drake/) | Lyric-frequency analysis across a catalogue. | `python3 drake/count_lyrics.py` |
 | `nightcore/` | Sped-up edits of one track at several speeds. Source and renders are audio, so they stay local — nothing is committed. | local only |
 | `tools/` | Scratch `esbuild`/`typescript` install. Generated, not committed. | local only |
 

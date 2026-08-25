@@ -36,9 +36,6 @@ nightcore/page7.html
 *.aac
 *.pdf
 
-# Song-lyrics corpus — third-party text, same reasoning as above.
-drake/drake_data.xls
-
 # The tracked CLAUDE.md *is* this file's content — committing both would be a
 # duplicate. Keep it locally as the source you copy from.
 CLAUDE-portable.md
