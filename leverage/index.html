@@ -556,13 +556,17 @@ $("prov2").innerHTML =
   "model by sample size; weighted by how often states come up, the game numbers rest on "+
   Math.round(M.meta.observedShare*100)+"% observed data.";
 $("prov3").innerHTML =
-  "<b>Leading after 3 or 5 innings</b> is built by convolving the same source's observed "+
-  "run-per-inning distributions ("+M.meta.reSituations.toLocaleString()+" half-innings), "+
-  "so no win model enters it; <b>scoring this inning</b> is read straight off that same "+
-  "matrix. What each outcome does to the bases, and how often each outcome happens, is "+
-  "measured from the 2024 season pitch by pitch ("+
-  M.meta.season2024Games.toLocaleString()+" games, "+
-  M.meta.season2024PA.toLocaleString()+" plate appearances).";
+  "<b>Leading after 3 or 5 innings</b> involves no win model at all — a segment is only "+
+  "runs. What is left in this half-inning comes from the same source's observed base/out "+
+  "run distribution ("+M.meta.reSituations.toLocaleString()+" half-innings); the margin "+
+  "from the innings after it is measured off "+M.meta.lineGames.toLocaleString()+" real "+
+  "linescores, so correlation between innings and the home-field edge are in there rather "+
+  "than assumed away. <b>Scoring this inning</b> is read straight off the run distribution. "+
+  "What each outcome does to the bases, and how often each happens, is measured from the "+
+  "2024 season pitch by pitch ("+M.meta.season2024Games.toLocaleString()+" games, "+
+  M.meta.season2024PA.toLocaleString()+" plate appearances). Over three or five innings "+
+  "the starting pitchers matter a lot and this model cannot see them, so read those two as "+
+  "the leverage of the situation — a specific matchup swings more.";
 
 window.__LI = {analyze:analyze, model:M, setMetric:function(k){
   for(var i=0;i<MET.length;i++) if(MET[i].key===k) mi=i;

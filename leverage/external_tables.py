@@ -24,6 +24,11 @@ runsperinningstats
     -- an observed run-expectancy matrix, as a full distribution rather than
     just a mean.
 
+linescores.raw
+    Retrosheet box-score `line` records for 2005-2024, one file: the per-inning
+    runs for both teams in 47,062 games. Used to measure multi-inning run
+    margins directly.
+
 statsyears/leverage
     "H"/"V", inning, outs, bases, differential, leverage
     -- their own published leverage index, used here only as a cross-check.
@@ -112,6 +117,32 @@ def load_run_expectancy(path=None):
     return mean, dist, n
 
 
+def load_linescores(path=None):
+    """-> [(away runs by inning, home runs by inning)] for every game on file.
+
+    Read from Retrosheet's box-score `line` records. Linescores are what make it
+    possible to measure how many runs a team really scores over several innings
+    -- including the fact that innings within a game are not independent of each
+    other -- rather than assuming it.
+    """
+    path = path or os.path.join(EXT, "linescores.raw")
+    games, cur = [], {}
+    for line in open(path):
+        p = line.rstrip("\n").split(",")
+        if len(p) < 3:
+            continue
+        if p[1] == "id":
+            if 0 in cur and 1 in cur:
+                games.append((cur[0], cur[1]))
+            cur = {}
+        elif p[1] == "line":
+            cur[int(p[2])] = [int(x) for x in p[3:]
+                              if x.strip().lstrip("-").isdigit()]
+    if 0 in cur and 1 in cur:
+        games.append((cur[0], cur[1]))
+    return games
+
+
 def load_published_leverage(path=None):
     """-> dict[(half, inning, outs, base, diff_home)] = their published LI."""
     path = path or os.path.join(EXT, "leverage")
@@ -128,4 +159,5 @@ def load_published_leverage(path=None):
 
 def available():
     return all(os.path.exists(os.path.join(EXT, f)) for f in
-               ("probswithballsstrikes.txt", "runsperinningstats", "leverage"))
+               ("probswithballsstrikes.txt", "runsperinningstats", "leverage",
+                "linescores.raw"))

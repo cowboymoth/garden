@@ -18,7 +18,7 @@ own scale, so **1.00 is always an average moment** for that metric.
 | metric | the swing in… | where it comes from |
 |---|---|---|
 | **Win game** | the chance of winning | published observed win-expectancy table |
-| **After 5** | the chance of being ahead after 5 innings | convolved observed run distributions |
+| **After 5** | the chance of being ahead after 5 innings | observed run distributions + real multi-inning margins from 47,062 linescores |
 | **After 3** | the chance of being ahead after 3 innings | same |
 | **Score run** | the chance the batting team scores again this inning | read straight off the observed run distribution |
 
@@ -27,7 +27,7 @@ runners on first and second with one out:
 
 | | game | after 5 | after 3 | score a run |
 |---|---|---|---|---|
-| leverage | 2.20 | 3.32 | **5.22** | 1.57 |
+| leverage | 2.20 | 3.31 | **5.23** | 1.57 |
 
 The same spot is a routine moment for the game and a huge one for the F3 line.
 And in the bottom of the 9th down one with the bases loaded and two outs, the
@@ -42,15 +42,17 @@ deriving one.**
 | piece | source |
 |---|---|
 | **win expectancy**, per game state *and per ball-strike count* | **Pulled.** [gregstoll/baseballstats](https://github.com/gregstoll/baseballstats), the data behind the Win Expectancy Finder — measured from Retrosheet play-by-play across **195,573 major-league games / 33.6M observed situations** |
-| **runs scored in the rest of a half-inning**, per base-out state, as a full distribution | **Pulled.** Same source, 15.5M observed half-innings. This is the whole basis for the other three metrics |
+| **runs scored in the rest of a half-inning**, per base-out state, as a full distribution | **Pulled.** Same source, 15.5M observed half-innings |
+| **runs per inning for both teams in 47,062 games** (2005-2024 linescores) | **Pulled.** Retrosheet box scores, streamed and filtered to the `line` records. Gives multi-inning run margins as they really are, correlations and home-field edge included |
 | a published **leverage index** column | **Pulled**, as a cross-check |
 | what each outcome does to the bases, and how often each outcome happens | **Measured here** from the 2024 Retrosheet season (2,426 games, 182,232 PA, 710k pitches) — no published matrix of this exists in usable form |
 | the eight normalising constants | **Measured here** from 2024 state frequencies |
 
 "Ahead after N innings" is deliberately *not* a win model. A segment outcome is
-just runs scored in the half-innings that are left, so it is the observed
-run-per-inning distributions convolved together, then read off the margin. Only
-the standard independence-between-half-innings assumption enters.
+only runs: what is left in the current half-inning, which the published base/out
+run distribution gives, plus the margin from the full half-innings after it,
+which real linescores give directly. An earlier version convolved independent
+half-innings instead — see below for why that was wrong.
 
 The one place a model of ours still appears is as a **prior**: the published win
 table is thin in rare corners (20-run leads, the 14th inning), so every cell is
@@ -66,12 +68,15 @@ plate appearance they happened during, so they aren't silently dropped.
 
 The build prints its own checks:
 
-- **The F3 / F5 convolution against reality.** Compared to what actually
-  happened in 2024, over states with 200+ observed plate appearances:
-  bias −0.007, rms **0.019** after 3 innings; bias −0.009, rms **0.024** after
-  5. Per-cell sampling noise alone is about 0.022, so essentially all of that
-  residual is sample size. The small negative bias is home-field advantage,
-  which the pooled run distribution doesn't carry.
+- **Are the swings big enough?** For any honest probability, the squared value
+  changes over a game must add up to the variance of the thing being predicted.
+  Ahead-after-3 comes in at **0.993** of it, ahead-after-5 at **0.951**, winning
+  the game at **0.987**, scoring this inning at **1.018**. See the note below on
+  the F5 gap.
+- **The F3 / F5 tables against reality.** Validated on 2024 play-by-play using
+  only states with runners on — none of which the calibration ever saw. After 3
+  innings: slope of observed on modelled **0.997** (1.0 = right spread), bias
+  +0.003, rms 0.030. After 5: slope 1.025, bias +0.011, rms 0.033.
 - **Against a published leverage column.** Correlation **0.986** across 1,525
   well-sampled states. Where we differ we're better: theirs approximates a plate
   appearance as 3% home run / 27% hit / 70% out with **no walk at all**, so it
@@ -98,9 +103,19 @@ The build prints its own checks:
   spanning all four metrics — that residual is the 1e-4 quantisation of the
   shipped tables divided through by the per-pitch normaliser.
 
-Two things worth knowing. The published win table spans decades in which extra
-innings had no automatic runner on second, so extra-inning cells reflect mostly
-the old rule. And observed win expectancy falls off faster with the score than
+**Why the first-five line is still 5% short on volatility.** A state-only model
+knows the bases, the outs and the score — not who is pitching. Over three or five
+innings the two starters dominate the result, and that information is worth real
+variance the model cannot carry: pre-game, an F5 line moves a lot with the
+pitching matchup. Some of it is recovered by calibrating the tables against
+468,003 observed half-inning starts (which pushed the spread out by gamma =
+1.045 and lifted the F5 variance ratio from 0.912 to 0.951), but the residual is
+information, not arithmetic. Read the F3/F5 leverage as the leverage of the
+*situation*; a specific matchup will be swingier than that.
+
+Two more things worth knowing. The published win table spans decades in which
+extra innings had no automatic runner on second, so extra-inning cells reflect
+mostly the old rule. And observed win expectancy falls off faster with the score than
 an even-teams model would, because a club that is behind really is more often
 the weaker club — real leverage early in a game runs a little higher than the
 textbook even-teams number for that reason (start of game 1.00 here vs 0.85
@@ -110,7 +125,7 @@ the conventional published value).
 ## Files
 
 ```
-fetch_data.sh          pull the 2024 Retrosheet season + the published tables
+fetch_data.sh          pull the 2024 season, the published tables, and linescores
 external_tables.py     read the published win / run expectancy matrices
 parse_retrosheet.py    2024 event notation -> base-out transitions + pitch sequences
 build_model.py         blend, build the four metrics, write model.json / model.js

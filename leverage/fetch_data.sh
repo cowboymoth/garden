@@ -30,4 +30,13 @@ GS=https://raw.githubusercontent.com/gregstoll/baseballstats/master
 curl -sSLf -o probswithballsstrikes.txt "$GS/probswithballsstrikes.txt"
 curl -sSLf -o runsperinningstats        "$GS/runsperinningstats"
 curl -sSLf -o leverage                  "$GS/statsyears/leverage"
+# Linescores for 2005-2024, streamed and filtered so only the `line` records
+# land on disk (~4 MB instead of ~130 MB of full box scores).
+for y in $(seq 2005 2024); do
+  for lg in EBA EBN; do
+    curl -sSLf --max-time 120 \
+      "https://raw.githubusercontent.com/chadwickbureau/retrosheet/master/seasons/$y/$y.$lg" \
+      | grep -E '^(id|line),' | sed "s/^/$y,/"
+  done
+done > linescores.raw
 echo "external tables: $(du -sh . | cut -f1)"

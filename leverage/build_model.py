@@ -453,39 +453,137 @@ def conv(a, b, cap=40):
     return r / r.sum()
 
 
-def segment_table(D, N):
-    """P(the home team is ahead after N innings), for every state inside those
-    innings.
+MARGIN = 30              # the run margin still to come is tracked over +/- this
 
-    No win-expectancy model is involved: a segment outcome is just runs scored
-    in the half-innings that are left, and the distribution of runs in a
-    half-inning is one of the published observed matrices. Half-innings are
-    taken as independent, which is the standard assumption.
-    """
-    fresh = D[(0, 0)]                       # a half-inning from the top
+
+def segment_table_independent(D, N):
+    """The naive version: assume every remaining half-inning is an independent
+    draw from the league run distribution. Kept only for comparison -- real
+    innings inside one game are not independent, and this runs too smooth."""
+    fresh = D[(0, 0)]
     pw = [np.array([1.0])]
     for _ in range(N + 1):
-        pw.append(conv(pw[-1], fresh))      # pw[k] = runs in k full half-innings
+        pw.append(conv(pw[-1], fresh))
     T = np.zeros((N, 2, NOUTS, NBASE, NDIFF))
     for inn in range(1, N + 1):
         for half in (0, 1):
             for o in range(NOUTS):
                 for b in range(NBASE):
                     cur = D[(o, b)]
-                    if half == 0:           # visitors batting: this half is theirs
+                    if half == 0:
                         A, H = conv(cur, pw[N - inn]), pw[N - inn + 1]
                     else:
                         H, A = conv(cur, pw[N - inn]), pw[N - inn]
-                    # distribution of (home runs - away runs) still to come
                     g = np.convolve(H, A[::-1])
-                    lo = -(len(A) - 1)                       # g[0] is this margin
-                    tail = np.cumsum(g[::-1])[::-1]          # P(margin >= k)
+                    lo = -(len(A) - 1)
+                    tail = np.cumsum(g[::-1])[::-1]
                     for di, d in enumerate(range(-DMAX, DMAX + 1)):
-                        need = 1 - d                          # need margin >= 1-d
-                        i = need - lo
+                        i = (1 - d) - lo
                         T[inn - 1, half, o, b, di] = (
                             1.0 if i < 0 else (tail[i] if i < len(tail) else 0.0))
     return T
+
+
+def margin_distribution(games, N, inn, half):
+    """Observed distribution of (home runs - away runs) still to come from the
+    FULL half-innings left in the segment, straight off real linescores."""
+    c = Counter()
+    for away, home in games:
+        if len(away) < N or len(home) < N:
+            continue                                    # rain-shortened
+        h = sum(home[inn - 1:N]) if half == 0 else sum(home[inn:N])
+        c[h - sum(away[inn:N])] += 1
+    v = np.zeros(2 * MARGIN + 1)
+    for m, k in c.items():
+        if abs(m) <= MARGIN:
+            v[m + MARGIN] += k
+    return v / v.sum()
+
+
+def segment_table(D, games, N):
+    """P(the home team is ahead after N innings) for every state in those innings.
+
+    No win model enters. A segment outcome is only runs: the runs left in the
+    current half-inning, which the published base/out run distribution gives,
+    plus the margin from the full half-innings after it, which real linescores
+    give directly -- correlation between innings, home-field edge and all.
+    """
+    T = np.zeros((N, 2, NOUTS, NBASE, NDIFF))
+    for inn in range(1, N + 1):
+        for half in (0, 1):
+            md = margin_distribution(games, N, inn, half)
+            for o in range(NOUTS):
+                for b in range(NBASE):
+                    cur = D[(o, b)]                     # runs left this half-inning
+                    if half == 1:                       # home batting: adds to margin
+                        z, off = np.convolve(md, cur), MARGIN
+                    else:                               # visitors batting: subtracts
+                        z, off = np.convolve(md, cur[::-1]), MARGIN + len(cur) - 1
+                    tail = np.cumsum(z[::-1])[::-1]     # P(total swing >= k)
+                    for di, d in enumerate(range(-DMAX, DMAX + 1)):
+                        i = (1 - d) + off
+                        T[inn - 1, half, o, b, di] = (
+                            1.0 if i < 0 else (tail[i] if i < len(tail) else 0.0))
+    return T
+
+
+def segment_half_inning_starts(games, N):
+    """Observed segment outcomes keyed by the state at each half-inning start.
+
+    Every half-inning begins with nobody on and nobody out at a known score, and
+    the linescore says how the segment ended -- so this is a very large observed
+    sample of exactly the states where the score differential does the work.
+    """
+    c = Counter()
+    for away, home in games:
+        if len(away) < N or len(home) < N:
+            continue
+        led = 1 if sum(home[:N]) > sum(away[:N]) else 0
+        for inn in range(1, N + 1):
+            for half in (0, 1):
+                d = (sum(home[:inn - 1]) - sum(away[:inn - 1]) if half == 0
+                     else sum(home[:inn - 1]) - sum(away[:inn]))
+                d = max(-DMAX, min(DMAX, d))
+                c[(inn, half, d, "n")] += 1
+                c[(inn, half, d, "led")] += led
+    return c
+
+
+def fit_segment_calibration(T, obs, floor=100):
+    """Fit p -> sigmoid(alpha + gamma * logit(p)) against the observed starts.
+
+    gamma > 1 means the table is too smooth and needs spreading out. It will be:
+    a state-only model cannot know which pitchers are on the mound, and that
+    information is worth real variance over three or five innings.
+    """
+    x, y, w = [], [], []
+    for k in sorted({k[:-1] for k in obs}):
+        n = obs[k + ("n",)]
+        if n < floor:
+            continue
+        inn, half, d = k
+        x.append(T[inn - 1, half, 0, 0, d + DMAX])
+        y.append(obs[k + ("led",)] / n)
+        w.append(n)
+    x, y, w = np.array(x), np.array(y), np.array(w, dtype=float)
+    lx = logit(x)
+    best = None
+    for g in np.arange(0.8, 1.6, 0.005):
+        for al in np.arange(-0.3, 0.3, 0.005):
+            r = float((w * (sigmoid(al + g * lx) - y) ** 2).sum() / w.sum())
+            if best is None or r < best[2]:
+                best = (float(al), float(g), r)
+    return best[0], best[1], len(x), int(w.sum())
+
+
+def calibrate(T, alpha, gamma):
+    return np.clip(sigmoid(alpha + gamma * logit(T)), 0.0, 1.0)
+
+
+def weighted_slope(x, y, w):
+    """Slope of observed on modelled. 1.0 = the model has the right spread."""
+    xm, ym = (x * w).sum() / w.sum(), (y * w).sum() / w.sum()
+    return float((w * (x - xm) * (y - ym)).sum() / (w * (x - xm) ** 2).sum())
 
 
 def run_inning_probs(D):
@@ -583,6 +681,27 @@ class RunMetric(CountByRecursion):
         if no >= 3:
             return 0.0                              # inning over, it did not
         return float(self.p1[no, nb])
+
+
+def squared_variation(metric, trans, pcat, pa_states, games, maxinn=99):
+    """Expected sum of squared value changes over one game.
+
+    For any honest probability this must equal the variance of the thing being
+    predicted: a value process that is short of it is running too smooth.
+    """
+    tot = 0.0
+    for st, n in pa_states.items():
+        if st[0] > maxinn:
+            continue
+        v0 = metric.value(*st)
+        acc = 0.0
+        for ci in range(NCAT):
+            q = 0.0
+            for (nb, no, r, p) in trans[(st[3], st[2], ci)]:
+                q += p * (metric.next_value(st[0], st[1], st[4], nb, no, r) - v0) ** 2
+            acc += pcat[ci] * q
+        tot += n * acc
+    return tot / games
 
 
 def b64u16(a):
@@ -707,33 +826,94 @@ def main():
 
     # ---- the four things a plate appearance can swing ---------------------
     D = run_dists(re_dist)
-    T5, T3 = segment_table(D, 5), segment_table(D, 3)
     p1 = run_inning_probs(D)
+    lines = EXTT.load_linescores()
 
     print("\n" + "=" * 74)
     print("THE OTHER THREE METRICS")
     print("=" * 74)
-    print("  'lead after N innings' is built by convolving the published run")
-    print("  distributions -- no win-expectancy model involved. Checked against")
-    print("  what actually happened in 2024:")
-    for seg, T, N in ((raw["seg3"], T3, 3), (raw["seg5"], T5, 5)):
-        keys = sorted({k[:-1] for k in seg})
-        gaps, wts = [], []
-        for k in keys:
-            n = seg[k + ("n",)]
-            if n < 200:
-                continue
-            emp = seg[k + ("led",)] / n
-            inn, half, outs, base, d = k
-            gaps.append(T[inn - 1, half, outs, base, max(-DMAX, min(DMAX, d)) + DMAX] - emp)
-            wts.append(n)
-        g, w = np.array(gaps), np.array(wts, dtype=float)
-        print("    after %d innings: %4d states, %7d observed PAs, bias %+0.4f  rms %.4f"
-              % (N, len(g), int(w.sum()), (g * w).sum() / w.sum(),
-                 np.sqrt((g ** 2 * w).sum() / w.sum())))
-    print("  'score this inning' is read straight off the published run distribution:")
-    print("     bases empty, 0 out %.3f   |   bases loaded, 0 out %.3f   |   1st, 2 out %.3f"
+    print("  'ahead after N innings' is only runs: what is left in this half-inning,")
+    print("  from the published base/out run distribution, plus the margin from the")
+    print("  full half-innings after it, measured off %s real linescores."
+          % "{:,}".format(len(lines)))
+
+    segs = {}
+    for N, seg in ((3, raw["seg3"]), (5, raw["seg5"])):
+        T_ind = segment_table_independent(D, N)
+        T = segment_table(D, lines, N)
+        starts = segment_half_inning_starts(lines, N)
+        alpha, gamma, ncell, nobs = fit_segment_calibration(T, starts)
+        Tc = calibrate(T, alpha, gamma)
+        segs[N] = Tc
+
+        print("\n  --- ahead after %d innings ---" % N)
+        print("    calibrated on %s half-inning starts (%d cells) from those games:"
+              % ("{:,}".format(nobs), ncell))
+        print("      gamma %.3f, alpha %+.3f   (gamma > 1 = the table needed spreading out)"
+              % (gamma, alpha))
+
+        # out-of-sample: 2024 play-by-play, only states with runners on, so none
+        # of the cells the calibration was fitted to
+        print("    against 2024 play-by-play, runners-on states only (never fitted):")
+        for tab, lbl in ((T_ind, "independent innings"), (T, "measured margins"),
+                         (Tc, "measured + calibrated")):
+            x, y, w = [], [], []
+            for k in sorted({k[:-1] for k in seg}):
+                n = seg[k + ("n",)]
+                if n < 50:
+                    continue
+                inn, half, outs, base, d = k
+                if outs == 0 and base == 0:
+                    continue
+                x.append(tab[inn - 1, half, outs, base, max(-DMAX, min(DMAX, d)) + DMAX])
+                y.append(seg[k + ("led",)] / n)
+                w.append(n)
+            x, y, w = np.array(x), np.array(y), np.array(w, dtype=float)
+            print("      %-22s slope %.3f   bias %+.4f   rms %.4f"
+                  % (lbl, weighted_slope(x, y, w),
+                     (w * (x - y)).sum() / w.sum(),
+                     np.sqrt((w * (x - y) ** 2).sum() / w.sum())))
+
+        nn = seg[(1, 0, 0, 0, 0, "n")]
+        pv = seg[(1, 0, 0, 0, 0, "led")] / nn
+        print("    squared swings over a game vs the variance of the outcome (%.4f):" % (pv * (1 - pv)))
+        for tab, lbl in ((T_ind, "independent innings"), (T, "measured margins"),
+                         (Tc, "measured + calibrated")):
+            sv = squared_variation(SegmentMetric(tab, N), trans, pcat,
+                                   raw["pa_states"], raw["games"], N)
+            print("      %-22s %.4f   ratio %.3f" % (lbl, sv, sv / (pv * (1 - pv))))
+
+    mr = RunMetric(p1)
+    sv = squared_variation(mr, trans, pcat, raw["pa_states"], raw["games"])
+    # this one resolves inside a half-inning, so check it there instead
+    Q = np.zeros((NOUTS, NBASE))
+    for _ in range(500):
+        nq = np.zeros_like(Q)
+        for o in range(NOUTS):
+            for b in range(NBASE):
+                v0 = p1[o, b]
+                acc = 0.0
+                for ci in range(NCAT):
+                    q = 0.0
+                    for (nb, no, r, p) in trans[(b, o, ci)]:
+                        v = 1.0 if r > 0 else (0.0 if no >= 3 else p1[no, nb])
+                        cont = 0.0 if (r > 0 or no >= 3) else Q[no, nb]
+                        q += p * ((v - v0) ** 2 + cont)
+                    acc += pcat[ci] * q
+                nq[o, b] = acc
+        if np.max(np.abs(nq - Q)) < 1e-14:
+            Q = nq
+            break
+        Q = nq
+    pr = p1[0, 0]
+    print("\n  --- score this inning ---")
+    print("    read straight off the published run distribution; squared swings over")
+    print("    a half-inning %.4f vs variance %.4f  ratio %.3f"
+          % (Q[0, 0], pr * (1 - pr), Q[0, 0] / (pr * (1 - pr))))
+    print("    bases empty 0 out %.3f | loaded 0 out %.3f | 1st, 2 out %.3f"
           % (p1[0, 0], p1[0, 7], p1[2, 1]))
+
+    T5, T3 = segs[5], segs[3]
 
     METRICS = [
         ("win", "Win the game", "Win game", we),
@@ -834,6 +1014,7 @@ def main():
             "weGames": int(obsN[0, 0, 0, 0, DMAX, 0, 0]),
             "weSituations": int(kept),
             "reSituations": int(re_n.sum()),
+            "lineGames": len(lines),
             "priorWeight": K, "priorWeightCount": KC,
             "observedShare": share0, "observedShareCount": share,
             "reObserved": [round(float(re_mean[o, b]), 4)
