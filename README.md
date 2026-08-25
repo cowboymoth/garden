@@ -3,8 +3,7 @@
 Playground for vibecoded projects. Intentionally messy — see
 [`CLAUDE.md`](CLAUDE.md) for how to work in here.
 
-Live: **https://cowboymoth.github.io/garden/** (once Pages is switched on — see
-below).
+Live: **https://cowboymoth.github.io/garden/**
 
 ## What's in here
 
@@ -40,20 +39,16 @@ This repo is **public**, so `.gitignore` keeps a few categories local:
 Every script reads from local paths, so nothing here needs the ignored files
 committed in order to run.
 
-## Turning on GitHub Pages
+## GitHub Pages
 
-Everything in here is a static HTML file, so Pages serves it with no build step.
+Pages is on, deploying from `main` at `/ (root)`. Everything in here is a static
+HTML file, so there is no build step — **`git push` is the deploy**, and the
+site updates about a minute later.
 
-**Settings → Pages → Source: "Deploy from a branch" → Branch `main`, folder `/ (root)` → Save.**
-
-A minute later:
-
-- `https://cowboymoth.github.io/garden/` — the landing page
-- `https://cowboymoth.github.io/garden/leverage/`
-- `https://cowboymoth.github.io/garden/doodles/doodles.html`
-- `https://cowboymoth.github.io/garden/odds-game/index.html`
-
-After that, `git push` *is* the deploy.
+- <https://cowboymoth.github.io/garden/> — the landing page
+- <https://cowboymoth.github.io/garden/leverage/>
+- <https://cowboymoth.github.io/garden/doodles/doodles.html>
+- <https://cowboymoth.github.io/garden/odds-game/index.html>
 
 ## Working on it
 

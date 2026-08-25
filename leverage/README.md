@@ -5,7 +5,8 @@ a game state — inning, score, outs, who's on, the count — and get the **Leve
 Index** of the at-bat and of the very next pitch, plus what each outcome would
 swing.
 
-Open `index.html`. No build step, no server.
+Live: **<https://cowboymoth.github.io/garden/leverage/>** — or just open
+`index.html`. No build step, no server.
 
 Nothing here shows a probability *level*. Only changes in one.
 
