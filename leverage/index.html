@@ -53,11 +53,16 @@
   .warn{font-size:10.5px; color:#e0a33a; margin-top:8px; display:none; line-height:1.4}
 
   /* ---- game state, one card ---- */
-  .stateRow{display:flex; gap:10px; align-items:center}
+  .stateRow{display:flex; gap:10px; align-items:stretch}
   svg.diamond{width:118px; height:118px; display:block; flex:none}
   svg.diamond .base{cursor:pointer}
-  .col{flex:1; display:flex; flex-direction:column; gap:7px}
+  .col{flex:1; display:flex; flex-direction:column; justify-content:space-between}
   .pline{display:flex; align-items:center; gap:8px}
+  .clear{border:1px solid var(--line); background:var(--panel2); color:var(--dim);
+    border-radius:8px; height:27px; font-size:10px; letter-spacing:.09em;
+    text-transform:uppercase; font-weight:600; cursor:pointer; width:100%}
+  .clear:active{background:#22303f}
+  .clear.off{opacity:.35}
   .plbl{font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--dim);
     width:48px; flex:none}
   .pips{display:flex; gap:7px}
@@ -178,6 +183,7 @@
           <div class="pips" id="balls" style="--on:#3f7fbf"></div></div>
         <div class="pline"><span class="plbl">Strikes</span>
           <div class="pips" id="strikes" style="--on:#e0a33a"></div></div>
+        <button class="clear" id="clear">Clear game state</button>
       </div>
     </div>
     <div class="ctrls">
@@ -403,7 +409,8 @@ function countMap(st){
 }
 
 /* ================================ state =================================== */
-var S = {inn:1, half:0, outs:0, base:0, balls:0, strikes:0, away:0, home:0};
+var FRESH = {inn:1, half:0, outs:0, base:0, balls:0, strikes:0, away:0, home:0};
+var S = Object.assign({}, FRESH);
 Object.defineProperty(S,'diff',{get:function(){ return this.home-this.away; }});
 
 function band(li){
@@ -440,6 +447,8 @@ function render(){
   $("homeLbl").classList.toggle("bat", S.half===1);
   Array.prototype.forEach.call($("half").children,function(b){
     b.classList.toggle("on", +b.dataset.h===S.half); });
+  var clean = Object.keys(FRESH).every(function(k){ return S[k]===FRESH[k]; });
+  $("clear").classList.toggle("off", clean);
   Array.prototype.forEach.call(document.querySelectorAll("#bases .base rect"),function(r){
     var on = (S.base>>(+r.parentNode.dataset.b))&1;
     r.setAttribute("fill", on?"#f2f5f9":"#0e1620");
@@ -529,6 +538,7 @@ function render(){
 document.querySelectorAll("#bases .base").forEach(function(g){
   g.onclick=function(){ S.base ^= (1<<(+g.dataset.b)); render(); };
 });
+$("clear").onclick=function(){ Object.assign(S, FRESH); render(); };
 $("half").onclick=function(e){
   if(e.target.dataset.h!==undefined){ S.half=+e.target.dataset.h; render(); } };
 function step(id,get,set,lo,hi){
