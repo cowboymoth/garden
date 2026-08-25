@@ -10,6 +10,14 @@ Live: **<https://cowboymoth.github.io/garden/leverage/>** — or just open
 
 Nothing here shows a probability *level*. Only changes in one.
 
+The count and out pips run the game forward rather than just setting a number.
+The last pip in each row is dashed and ends something: **BB** is ball four, so
+the batter takes first and anyone forced moves up (with the run scoring if the
+bases were loaded); **K** is strike three, so an out goes up and the count
+resets; **3** is the third out, which clears the bases and sends the game to the
+next half-inning. Tapping the lit pip you are on steps back instead, for when
+you mis-tap.
+
 ## Swing what?
 
 Four things a plate appearance can move, switchable in the app. Each gets its

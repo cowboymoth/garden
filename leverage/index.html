@@ -65,10 +65,15 @@
   .clear.off{opacity:.35}
   .plbl{font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--dim);
     width:48px; flex:none}
-  .pips{display:flex; gap:7px}
+  .pips{display:flex; gap:6px}
   .pip{position:relative; width:24px; height:24px; border-radius:50%;
     border:2px solid var(--line); background:transparent; cursor:pointer; padding:0;
+    display:flex; align-items:center; justify-content:center;
     transition:background .12s,border-color .12s}
+  /* the last pip of each row is an event, not a state: it never lights up */
+  .pip.evt{border-style:dashed; border-color:#3d4d61; color:var(--dimmer);
+    font-size:8.5px; font-weight:700; letter-spacing:0}
+  .pip.evt:active{background:#22303f}
   /* the dot stays small; the finger target around it does not */
   .pip:before{content:""; position:absolute; top:-8px; right:-5px; bottom:-8px; left:-5px}
   .pip.on{background:var(--on,#e0a33a); border-color:var(--on,#e0a33a)}
@@ -427,20 +432,60 @@ var CAPTION = {
   run: "the chance of <b>scoring this inning</b>"
 };
 
-function pips(el,n,cur,set){
+function pips(el,n,cur,set,endLabel,endTitle){
   el.innerHTML="";
   for(var i=0;i<n;i++)(function(i){
-    var b=document.createElement("button");
-    b.className="pip"+(i<cur?" on":"")+(el.id==="strikes"?" sq":"");
+    var b=document.createElement("button"), last=(i===n-1);
+    b.className="pip"+(i<cur?" on":"")+(el.id==="strikes"?" sq":"")+(last?" evt":"");
+    if(last){ b.textContent=endLabel; b.title=endTitle; b.setAttribute("aria-label",endTitle); }
+    // tapping the lit pip you are on steps back; anything else steps forward
     b.onclick=function(){ set(cur===i+1 ? i : i+1); };
     el.appendChild(b);
   })(i);
 }
 
+/* ------- the game moving forward, with the consequences that follow -------- */
+function addRun(n){ if(S.half===1) S.home=Math.min(30,S.home+n);
+                    else S.away=Math.min(30,S.away+n); }
+
+/** Third out: the half-inning is over. */
+function endHalf(){
+  S.outs=0; S.base=0; S.balls=0; S.strikes=0;
+  if(S.half===0) S.half=1;
+  else { S.half=0; if(S.inn<14) S.inn++; }
+}
+/** An out is recorded: fresh count, and it may end the inning. */
+function addOut(){
+  S.balls=0; S.strikes=0;
+  if(S.outs>=2) endHalf(); else S.outs++;
+}
+/** Ball four. The batter takes first and pushes along anyone who has to move. */
+function walk(){
+  var on1=S.base&1, on2=S.base&2, on3=S.base&4;
+  if(on1){
+    if(on2){
+      if(on3) addRun(1);          // bases loaded, so the run is forced in
+      S.base|=4;                  // first-and-second runner is forced to third
+    }
+    S.base|=2;                    // the runner on first is forced to second
+  }
+  S.base|=1;                      // and the batter takes first
+  S.balls=0; S.strikes=0;
+}
+
+function setBalls(v){   if(v>=4) walk(); else S.balls=v;    render(); }
+function setStrikes(v){ if(v>=3) addOut(); else S.strikes=v; render(); }
+function setOuts(v){
+  if(v>=3) endHalf();
+  else if(v>S.outs){ S.outs=v; S.balls=0; S.strikes=0; }   // a new out clears the count
+  else S.outs=v;                                            // stepping back is a correction
+  render();
+}
+
 function render(){
-  pips($("outs"),3,S.outs,function(v){ S.outs=v; render(); });
-  pips($("balls"),3,S.balls,function(v){ S.balls=v; render(); });
-  pips($("strikes"),2,S.strikes,function(v){ S.strikes=v; render(); });
+  pips($("outs"),3,S.outs,setOuts,"3","Third out — end the half-inning");
+  pips($("balls"),4,S.balls,setBalls,"BB","Ball four — walk");
+  pips($("strikes"),3,S.strikes,setStrikes,"K","Strike three — out");
   $("innV").textContent=S.inn;
   $("awayV").textContent=S.away; $("homeV").textContent=S.home;
   $("awayLbl").classList.toggle("bat", S.half===0);
@@ -552,8 +597,10 @@ step("home",function(){return S.home;},function(v){S.home=v;}, 0, 30);
 (function(){
   var p=location.hash.slice(1).split(".").map(Number);
   if(p.length>=8 && p.slice(0,8).every(function(x){ return !isNaN(x); })){
-    S.inn=p[0]; S.half=p[1]; S.outs=p[2]; S.base=p[3];
-    S.balls=p[4]; S.strikes=p[5]; S.away=p[6]; S.home=p[7];
+    function cl(v,lo,hi){ return Math.max(lo,Math.min(hi,Math.round(v))); }
+    S.inn=cl(p[0],1,14); S.half=cl(p[1],0,1); S.outs=cl(p[2],0,2); S.base=cl(p[3],0,7);
+    S.balls=cl(p[4],0,3); S.strikes=cl(p[5],0,2);
+    S.away=cl(p[6],0,30); S.home=cl(p[7],0,30);
     if(p.length>8 && p[8]>=0 && p[8]<MET.length) mi=p[8];
   }
 })();
