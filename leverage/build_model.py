@@ -320,9 +320,14 @@ class TableWE:
     `N` is how many real situations each cell was measured from.
     """
 
+    home_ref = True
+
     def __init__(self, W, N, ext_entry):
         self.W, self.N = W, N
         self.ext = ext_entry          # observed value on reaching extras, by diff
+
+    def in_scope(self, inn):
+        return True
 
     def value(self, inn, half, outs, base, diff, b=0, s=0):
         d = max(-DMAX, min(DMAX, diff))
@@ -430,29 +435,154 @@ class Leverage:
         return out
 
 
-class RecursionWE(TableWE):
-    """Win expectancy from a state-level table, with counts filled in by the
-    count recursion rather than by an observed by-count table.
+# ---------------------------------------------------------------------------
+# The other three things a plate appearance can swing
+# ---------------------------------------------------------------------------
+def run_dists(re_dist):
+    """(outs, base) -> observed probability of scoring 0, 1, 2, ... more runs
+    before this half-inning ends. Straight from the published matrix."""
+    D = {}
+    for (o, b), counts in re_dist.items():
+        t = float(sum(counts))
+        D[(o, b)] = np.array(counts, dtype=float) / t
+    return D
 
-    Used for the neutral-teams view, where there is no observed table to read.
+
+def conv(a, b, cap=40):
+    r = np.convolve(a, b)[:cap + 1]
+    return r / r.sum()
+
+
+def segment_table(D, N):
+    """P(the home team is ahead after N innings), for every state inside those
+    innings.
+
+    No win-expectancy model is involved: a segment outcome is just runs scored
+    in the half-innings that are left, and the distribution of runs in a
+    half-inning is one of the published observed matrices. Half-innings are
+    taken as independent, which is the standard assumption.
+    """
+    fresh = D[(0, 0)]                       # a half-inning from the top
+    pw = [np.array([1.0])]
+    for _ in range(N + 1):
+        pw.append(conv(pw[-1], fresh))      # pw[k] = runs in k full half-innings
+    T = np.zeros((N, 2, NOUTS, NBASE, NDIFF))
+    for inn in range(1, N + 1):
+        for half in (0, 1):
+            for o in range(NOUTS):
+                for b in range(NBASE):
+                    cur = D[(o, b)]
+                    if half == 0:           # visitors batting: this half is theirs
+                        A, H = conv(cur, pw[N - inn]), pw[N - inn + 1]
+                    else:
+                        H, A = conv(cur, pw[N - inn]), pw[N - inn]
+                    # distribution of (home runs - away runs) still to come
+                    g = np.convolve(H, A[::-1])
+                    lo = -(len(A) - 1)                       # g[0] is this margin
+                    tail = np.cumsum(g[::-1])[::-1]          # P(margin >= k)
+                    for di, d in enumerate(range(-DMAX, DMAX + 1)):
+                        need = 1 - d                          # need margin >= 1-d
+                        i = need - lo
+                        T[inn - 1, half, o, b, di] = (
+                            1.0 if i < 0 else (tail[i] if i < len(tail) else 0.0))
+    return T
+
+
+def run_inning_probs(D):
+    """P(at least one more run scores this half-inning), per base/out state."""
+    p = np.zeros((NOUTS, NBASE))
+    for o in range(NOUTS):
+        for b in range(NBASE):
+            p[o, b] = 1.0 - D[(o, b)][0]
+    return p
+
+
+class _FlatCounts:
+    """A view of a metric where every count reads the state-level value."""
+
+    def __init__(self, m):
+        self.m = m
+
+    def value(self, inn, half, outs, base, diff, b=0, s=0):
+        return self.m.state_value(inn, half, outs, base, diff)
+
+    def next_value(self, *a):
+        return self.m.next_value(*a)
+
+
+class CountByRecursion:
+    """Fills in count-level values with the count recursion.
+
+    Used for the metrics with no published by-count table of their own. The
+    recursion is anchored so its 0-0 value is exactly the state-level number.
     """
 
-    def __init__(self, grid, N, ext_entry, trans, pm, pcc):
-        flat = np.repeat(grid[..., None, None], 4, axis=-2).repeat(3, axis=-1)
-        TableWE.__init__(self, flat, N, ext_entry)
-        self._lev = Leverage(TableWE(flat, N, ext_entry), trans, pm, pcc)
+    def attach(self, trans, pm, pcc):
+        self._lev = Leverage(_FlatCounts(self), trans, pm, pcc)
         self._cache = {}
+        return self
 
     def value(self, inn, half, outs, base, diff, b=0, s=0):
         if b == 0 and s == 0:
-            return TableWE.value(self, inn, half, outs, base, diff)
+            return self.state_value(inn, half, outs, base, diff)
         k = (inn, half, outs, base, max(-DMAX, min(DMAX, diff)))
         if k not in self._cache:
             v, p = self._lev.state_values(*k)
             W = self._lev.count_recursion(v, p)
-            anchor = TableWE.value(self, *k) - W[(0, 0)]
+            anchor = self.state_value(*k) - W[(0, 0)]
             self._cache[k] = {c: min(1.0, max(0.0, W[c] + anchor)) for c in COUNTS}
         return self._cache[k][(b, s)]
+
+
+class SegmentMetric(CountByRecursion):
+    """Is the home team ahead when the first N innings are done?"""
+
+    home_ref = True
+
+    def __init__(self, T, N):
+        self.T, self.N, self.segN = T, N, N
+
+    def in_scope(self, inn):
+        return inn <= self.N
+
+    def state_value(self, inn, half, outs, base, diff):
+        d = max(-DMAX, min(DMAX, diff))
+        if inn > self.N:
+            return 1.0 if d > 0 else 0.0           # already settled
+        return float(self.T[inn - 1, half, outs, base, d + DMAX])
+
+    def next_value(self, inn, half, diff, nb, no, runs):
+        sgn = 1 if half == 1 else -1
+        d = max(-DMAX, min(DMAX, diff + sgn * runs))
+        if no < 3:
+            return self.state_value(inn, half, no, nb, d)
+        if half == 0:
+            return self.state_value(inn, 1, 0, 0, d)
+        if inn >= self.N:
+            return 1.0 if d > 0 else 0.0
+        return self.state_value(inn + 1, 0, 0, 0, d)
+
+
+class RunMetric(CountByRecursion):
+    """Does the batting team score at least one more run this half-inning?"""
+
+    home_ref = False
+
+    def __init__(self, p1):
+        self.p1 = p1
+
+    def in_scope(self, inn):
+        return True
+
+    def state_value(self, inn, half, outs, base, diff):
+        return float(self.p1[outs, base])
+
+    def next_value(self, inn, half, diff, nb, no, runs):
+        if runs > 0:
+            return 1.0                              # it happened
+        if no >= 3:
+            return 0.0                              # inning over, it did not
+        return float(self.p1[no, nb])
 
 
 def b64u16(a):
@@ -575,124 +705,125 @@ def main():
           % worst)
     print("  higher-offence game; ours is 2024 alone, so most of that is era.")
 
-    # ---- leverage
-    cache = {}
-
-    def sw(inn, half, outs, base, diff):
-        k = (inn, half, outs, base, diff)
-        if k not in cache:
-            cache[k] = lev.swings(*k)
-        return cache[k]
-
-    num = den = 0.0
-    for (inn, half, outs, base, diff), n in raw["pa_states"].items():
-        num += n * sw(inn, half, outs, base, diff)[(0, 0)][0]
-        den += n
-    denom_pa = num / den
-    num = denp = 0.0
-    for (inn, half, outs, base, diff, b, s), n in raw["pitch_states"].items():
-        num += n * sw(inn, half, outs, base, diff)[(b, s)][1]
-        denp += n
-    denom_pitch = num / denp
+    # ---- the four things a plate appearance can swing ---------------------
+    D = run_dists(re_dist)
+    T5, T3 = segment_table(D, 5), segment_table(D, 3)
+    p1 = run_inning_probs(D)
 
     print("\n" + "=" * 74)
-    print("LEVERAGE")
+    print("THE OTHER THREE METRICS")
     print("=" * 74)
-    print("  mean |win-prob swing| per plate appearance: %.5f" % denom_pa)
-    print("     -> the constant usually quoted for this is ~0.0346")
-    print("  mean |win-prob swing| per pitch:            %.5f" % denom_pitch)
+    print("  'lead after N innings' is built by convolving the published run")
+    print("  distributions -- no win-expectancy model involved. Checked against")
+    print("  what actually happened in 2024:")
+    for seg, T, N in ((raw["seg3"], T3, 3), (raw["seg5"], T5, 5)):
+        keys = sorted({k[:-1] for k in seg})
+        gaps, wts = [], []
+        for k in keys:
+            n = seg[k + ("n",)]
+            if n < 200:
+                continue
+            emp = seg[k + ("led",)] / n
+            inn, half, outs, base, d = k
+            gaps.append(T[inn - 1, half, outs, base, max(-DMAX, min(DMAX, d)) + DMAX] - emp)
+            wts.append(n)
+        g, w = np.array(gaps), np.array(wts, dtype=float)
+        print("    after %d innings: %4d states, %7d observed PAs, bias %+0.4f  rms %.4f"
+              % (N, len(g), int(w.sum()), (g * w).sum() / w.sum(),
+                 np.sqrt((g ** 2 * w).sum() / w.sum())))
+    print("  'score this inning' is read straight off the published run distribution:")
+    print("     bases empty, 0 out %.3f   |   bases loaded, 0 out %.3f   |   1st, 2 out %.3f"
+          % (p1[0, 0], p1[0, 7], p1[2, 1]))
 
-    pairs = []
-    for (half, inn, outs, base, d), theirs in pub_li.items():
-        if inn > NINN or abs(d) > 6 or outs > 2:
-            continue
-        if obsN[iinn(inn), half, outs, base, d + DMAX, 0, 0] < 2000:
-            continue
-        pairs.append((sw(inn, half, outs, base, d)[(0, 0)][0] / denom_pa, theirs))
-    A = np.array([p[0] for p in pairs])
-    B = np.array([p[1] for p in pairs])
-    print("\n  our LI vs the published leverage column, on well-sampled states:")
-    print("    %d states   correlation %.4f   mean ours %.3f vs theirs %.3f"
-          % (len(A), float(np.corrcoef(A, B)[0, 1]), A.mean(), B.mean()))
-    print("    (theirs approximates a plate appearance as 3% HR / 27% hit / 70% out,")
-    print("     with no walk at all, so it understates spots where a walk matters.)")
+    METRICS = [
+        ("win", "Win the game", "Win game", we),
+        ("f5", "Lead after 5 innings", "After 5",
+         SegmentMetric(T5, 5).attach(trans, pm, pcc)),
+        ("f3", "Lead after 3 innings", "After 3",
+         SegmentMetric(T3, 3).attach(trans, pm, pcc)),
+        ("run", "Score this inning", "Score run", RunMetric(p1).attach(trans, pm, pcc)),
+    ]
 
-    # The published table is measured over real, unequal teams, so its win
-    # expectancy falls off faster with the score than a two-average-teams model
-    # does (clubs that are behind really are more often the weaker club). That
-    # lifts leverage early in a game. Quantify it rather than hiding it.
-    neutral = Leverage(RecursionWE(prior0, obsN, ext_entry, trans, pm, pcc),
-                       trans, pm, pcc)
-    ncache = {}
+    results = {}
+    for key, label, short, metric in METRICS:
+        lv = Leverage(metric, trans, pm, pcc)
+        cache = {}
 
-    def nsw(k):
-        if k not in ncache:
-            ncache[k] = neutral.swings(*k)
-        return ncache[k]
+        def sw(st, _lv=lv, _c=cache):
+            if st not in _c:
+                _c[st] = _lv.swings(*st)
+            return _c[st]
 
-    nn = nd = 0.0
-    for k, n in raw["pa_states"].items():
-        nn += n * nsw(k)[(0, 0)][0]
-        nd += n
-    denom_neutral = nn / nd
-    nn = ndp = 0.0
-    for (inn, half, outs, base, diff, b, s), n in raw["pitch_states"].items():
-        nn += n * nsw((inn, half, outs, base, diff))[(b, s)][1]
-        ndp += n
-    denom_neutral_pitch = nn / ndp
-    print("\n  the same leverage arithmetic on a neutral-teams model instead of the")
-    print("  observed table: mean swing %.5f per PA, %.5f per pitch"
-          % (denom_neutral, denom_neutral_pitch))
-    print("  (observed table: %.5f and %.5f)." % (denom_pa, denom_pitch))
+        num = den = 0.0
+        for st, n in raw["pa_states"].items():
+            if not metric.in_scope(st[0]):
+                continue
+            num += n * sw(st)[(0, 0)][0]
+            den += n
+        dpa = num / den
+        num = denp = 0.0
+        for (inn, half, outs, base, diff, b, s), n in raw["pitch_states"].items():
+            if not metric.in_scope(inn):
+                continue
+            num += n * sw((inn, half, outs, base, diff))[(b, s)][1]
+            denp += n
+        dpit = num / denp
+        results[key] = {"label": label, "short": short, "metric": metric,
+                        "sw": sw, "denomPA": dpa, "denomPitch": dpit,
+                        "paWeight": den, "pitchWeight": denp}
+
+    print("\n" + "=" * 74)
+    print("LEVERAGE -- one index per metric, each normalised so 1.00 is average")
+    print("=" * 74)
+    print("  %-22s %14s %14s %12s" % ("metric", "mean |swing|", "per pitch", "PAs in scope"))
+    for key, label, short, metric in METRICS:
+        r = results[key]
+        print("  %-22s %13.5f %14.5f %12s"
+              % (label, r["denomPA"], r["denomPitch"], "{:,}".format(int(r["paWeight"]))))
+    print("  (for the game, the constant usually quoted is ~0.0346 -- ours %.5f)"
+          % results["win"]["denomPA"])
 
     ref = [
-        ("start of game, top 1st", (1, 0, 0, 0, 0)),
-        ("bot 9th, tied, bases loaded, 2 out", (9, 1, 2, 7, 0)),
+        ("top 1st, bases empty, 0 out, tied", (1, 0, 0, 0, 0)),
+        ("bot 3rd, 1st & 2nd, 1 out, tied", (3, 1, 1, 3, 0)),
+        ("top 5th, bases loaded, 2 out, down 1", (5, 0, 2, 7, 1)),
+        ("bot 7th, runner on 2nd, 0 out, tied", (7, 1, 0, 2, 0)),
         ("bot 9th, down 1, bases loaded, 2 out", (9, 1, 2, 7, -1)),
-        ("bot 9th, down 1, runner on 1st, 2 out", (9, 1, 2, 1, -1)),
-        ("bot 8th, down 1, runners on 1&2, 1 out", (8, 1, 1, 3, -1)),
-        ("top 1st, bases empty, 2 out", (1, 0, 2, 0, 0)),
-        ("top 3rd, up 8, bases empty, 1 out", (3, 0, 1, 0, 8)),
     ]
-    print("\n  %-40s %7s %7s %8s %8s %10s"
-          % ("", "our LI", "neutral", "theirs", "WE", "observed N"))
-    for label, st in ref:
-        pa, pit, w = sw(*st)[(0, 0)]
-        theirs = pub_li.get((st[1], st[0], st[2], st[3], st[4]))
-        print("  %-40s %7.2f %7.2f %7s %8.3f %10s"
-              % (label, pa / denom_pa, nsw(st)[(0, 0)][0] / denom_neutral,
-                 ("%.2f" % theirs) if theirs is not None else "--",
-                 w, "{:,}".format(int(we.observations(*st)))))
-    print("  'neutral' is the same computation on a two-average-teams model. The")
-    print("  gap is real teams: an early deficit predicts a loss a bit more strongly")
-    print("  than equal-teams maths says, which lifts early-game leverage.")
+    print("\n  leverage at the same spot, measured against each metric:")
+    print("  %-38s %8s %8s %8s %8s" % ("", "game", "after 5", "after 3", "run"))
+    for lab, st in ref:
+        row = "  %-38s" % lab
+        for key, _l, _s, metric in METRICS:
+            r = results[key]
+            row += ("%8.2f" % (r["sw"](st)[(0, 0)][0] / r["denomPA"])
+                    if metric.in_scope(st[0]) else "%8s" % "--")
+        print(row)
 
+    print("\n  and one at-bat through the count (bot 9th, tied, 1st & 2nd, 1 out),")
+    print("  pitch leverage on the game:")
     st = (9, 1, 1, 3, 0)
-    allc = sw(*st)
-    print("\n  one at-bat through the count (bot 9th, tied, 1st & 2nd, 1 out):")
-    print("     count   WE(home)   AB leverage   pitch leverage   observed N")
+    allc = results["win"]["sw"](st)
+    line = "    "
     for (b, s) in COUNTS:
-        pa, pit, w = allc[(b, s)]
-        print("      %d-%d      %.3f       %6.2f          %6.2f    %11s"
-              % (b, s, w, pa / denom_pa, pit / denom_pitch,
-                 "{:,}".format(int(we.observations(*st, b, s)))))
+        line += "%d-%d %5.2f   " % (b, s, allc[(b, s)][1] / results["win"]["denomPitch"])
+        if s == 2:
+            print(line)
+            line = "    "
 
     wt = 0.0
     for (inn, half, outs, base, diff, b, s), n in raw["pitch_states"].items():
         nn = we.observations(inn, half, outs, base, diff, b, s)
         wt += n * nn / (nn + KC)
-    share = wt / denp
+    share = wt / results["win"]["pitchWeight"]
     wt0 = 0.0
-    for (inn, half, outs, base, diff), n in raw["pa_states"].items():
-        nn = we.observations(inn, half, outs, base, diff)
+    for st, n in raw["pa_states"].items():
+        nn = we.observations(*st)
         wt0 += n * nn / (nn + K)
-    share0 = wt0 / den
-    print("\n  Weighted by how often states actually came up in 2024, the win")
-    print("  expectancy this app reports is:")
-    print("    at the state level (what drives at-bat leverage)  %.1f%% observed data"
-          % (100 * share0))
-    print("    at the count level (what drives pitch leverage)   %.1f%% observed data"
-          % (100 * share))
+    share0 = wt0 / results["win"]["paWeight"]
+    print("\n  Weighted by how often states came up in 2024, the game-level numbers")
+    print("  rest on %.1f%% observed data at the state level, %.1f%% at the count level."
+          % (100 * share0, 100 * share))
 
     # ---- export
     weC = blendC[:, :, :, :, DMAX - DMAXC: DMAX + DMAXC + 1, :, :]
@@ -702,29 +833,36 @@ def main():
             "season2024PA": int(sum(raw["cat_totals"].values())),
             "weGames": int(obsN[0, 0, 0, 0, DMAX, 0, 0]),
             "weSituations": int(kept),
-            "denomPA": denom_pa,
-            "denomPitch": denom_pitch,
-            "priorWeight": K,
-            "priorWeightCount": KC,
-            "observedShare": share0,
-            "observedShareCount": share,
-            "denomNeutralPA": denom_neutral,
-            "denomNeutralPitch": denom_neutral_pitch,
+            "reSituations": int(re_n.sum()),
+            "priorWeight": K, "priorWeightCount": KC,
+            "observedShare": share0, "observedShareCount": share,
             "reObserved": [round(float(re_mean[o, b]), 4)
                            for o in range(NOUTS) for b in range(NBASE)],
         },
         "cats": CATS,
         "dmax": DMAX, "dmaxc": DMAXC, "ninn": NINN,
         "trans": {}, "pitch": {}, "catAtCount": {},
-        "we0": b64u16(blend0.reshape(-1) * 10000.0),      # win prob in basis points
         "weC": b64u16(weC.reshape(-1) * 10000.0),
-        "we0n": b64u16(prior0.reshape(-1) * 10000.0),   # neutral-teams variant
-        "obsN": b64u16(np.minimum(obsN[..., 0, 0].reshape(-1) / 4.0, 65535)),
         "extEntry": [round(float(x), 5) for x in ext_entry.reshape(-1)],
+        "metrics": [], "tab": {},
     }
+    for key, label, short, metric in METRICS:
+        r = results[key]
+        out["metrics"].append({
+            "key": key, "label": label, "short": short,
+            "homeRef": bool(metric.home_ref),
+            "innMax": int(getattr(metric, "segN", 0)),
+            "denomPA": r["denomPA"], "denomPitch": r["denomPitch"],
+        })
+    out["tab"]["win"] = b64u16(blend0.reshape(-1) * 10000.0)
+    out["tab"]["f5"] = b64u16(T5.reshape(-1) * 10000.0)
+    out["tab"]["f3"] = b64u16(T3.reshape(-1) * 10000.0)
+    out["tab"]["run"] = [round(float(p1[o, b]), 5)
+                         for o in range(NOUTS) for b in range(NBASE)]
+
     for (base, outs, ci), lst in trans.items():
         out["trans"]["%d,%d,%d" % (base, outs, ci)] = [
-            [nb, no, r, round(p, 6)] for (nb, no, r, p) in lst if p > 1e-9]
+            [nb, no, r_, round(pp, 6)] for (nb, no, r_, pp) in lst if pp > 1e-9]
     for (b, s) in COUNTS:
         m = pm[(b, s)]
         out["pitch"]["%d%d" % (b, s)] = {
@@ -734,27 +872,24 @@ def main():
         out["catAtCount"]["%d%d" % (b, s)] = [round(float(x), 6) for x in pcc[(b, s)]]
 
     out["selftest"] = []
-    for label, s0 in ref:
-        pa, pit, w = sw(*s0)[(0, 0)]
-        out["selftest"].append({"state": list(s0), "count": [0, 0], "mode": "obs",
-                                "we": round(w, 5), "li": round(pa / denom_pa, 4),
-                                "pli": round(pit / denom_pitch, 4)})
-        npa, npit, nw = nsw(s0)[(0, 0)]
-        out["selftest"].append({"state": list(s0), "count": [0, 0], "mode": "neu",
-                                "we": round(nw, 5), "li": round(npa / denom_neutral, 4),
-                                "pli": round(npit / denom_neutral_pitch, 4)})
-    for (b, s) in [(0, 0), (3, 1), (0, 2), (3, 2)]:
-        pa, pit, w = allc[(b, s)]
-        out["selftest"].append({"state": list(st), "count": [b, s], "mode": "obs",
-                                "we": round(w, 5), "li": round(pa / denom_pa, 4),
-                                "pli": round(pit / denom_pitch, 4)})
+    for key, _l, _s, metric in METRICS:
+        r = results[key]
+        for lab, s0 in ref:
+            if not metric.in_scope(s0[0]):
+                continue
+            for (b, s) in ((0, 0), (3, 2)):
+                pa, pit, v = r["sw"](s0)[(b, s)]
+                out["selftest"].append({
+                    "metric": key, "state": list(s0), "count": [b, s],
+                    "v": round(v, 5), "li": round(pa / r["denomPA"], 4),
+                    "pli": round(pit / r["denomPitch"], 4)})
 
     with open(os.path.join(HERE, "model.json"), "w") as f:
         json.dump(out, f, separators=(",", ":"))
     js = os.path.join(HERE, "model.js")
     with open(js, "w") as f:
-        f.write("// Generated by build_model.py. Win expectancy is Greg Stoll's published\n"
-                "// Retrosheet table; plate-appearance outcomes are 2024. See README.md.\n")
+        f.write("// Generated by build_model.py. Win expectancy and run distributions are\n"
+                "// published Retrosheet tables; outcome rates are 2024. See README.md.\n")
         f.write("window.LI_MODEL=")
         json.dump(out, f, separators=(",", ":"))
         f.write(";\n")

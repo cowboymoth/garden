@@ -319,6 +319,9 @@ def parse_season(event_paths, box_paths):
         # empirical run expectancy: (base_code, outs) -> [runs to end of half, n]
         "re_runs": Counter(),
         "re_n": Counter(),
+        # did the home team lead after 3 / after 5 innings? keyed by PA state
+        "seg3": Counter(),
+        "seg5": Counter(),
     }
 
     for path in event_paths:
@@ -352,6 +355,8 @@ def _finish(gid, plays, out, finals):
     pa_bases, pa_outs, pa_runs, pa_diff = bases, 0, 0, 0
     half_states, half_runs = [], 0        # for empirical run expectancy
     re_runs, re_n = Counter(), Counter()
+    after3 = after5 = None                # score once 3 / 5 innings are complete
+    seg_rows = []                         # (segment, state) for PAs inside a segment
     rows_trans, rows_pitch, rows_pa_state, rows_pitch_state, rows_count = [], [], [], [], []
     cat_totals = Counter()
     rollovers = 0
@@ -365,13 +370,17 @@ def _finish(gid, plays, out, finals):
             inning, half, count_f, pitches, event = int(p[1]), int(p[2]), p[4], p[5], p[6]
             if event == "NP":
                 continue
+            if inning > 3 and after3 is None:
+                after3 = (score[0], score[1])
+            if inning > 5 and after5 is None:
+                after5 = (score[0], score[1])
             if (inning, half) != half_key:
                 if half_key is not None and pa_started:
                     rollovers += 1            # half ended mid-PA (e.g. caught stealing)
                 half_states, half_runs = [], 0
                 half_key, bases, outs = (inning, half), (False, False, False), 0
                 pa_bases, pa_outs, pa_runs = bases, 0, 0
-                pa_diff = score[half] - score[1 - half]
+                pa_diff = score[1] - score[0]      # always home minus away
                 pa_started = False
             if pending_radj:
                 b = [False, False, False]
@@ -393,6 +402,10 @@ def _finish(gid, plays, out, finals):
                 d = max(-15, min(15, pa_diff))
                 start_bc = base_code(pa_bases)
                 rows_pa_state.append((inn, half, pa_outs, start_bc, d))
+                if inning <= 3:
+                    seg_rows.append((3, (inning, half, pa_outs, start_bc, d)))
+                if inning <= 5:
+                    seg_rows.append((5, (inning, half, pa_outs, start_bc, d)))
                 half_states.append((start_bc, pa_outs, half_runs - pa_runs))
                 rows_trans.append(((start_bc, pa_outs, cat), (base_code(bases), outs, pa_runs)))
                 cat_totals[cat] += 1
@@ -413,7 +426,7 @@ def _finish(gid, plays, out, finals):
 
                 # next PA starts from here
                 pa_bases, pa_outs, pa_runs = bases, outs, 0
-                pa_diff = score[half] - score[1 - half]
+                pa_diff = score[1] - score[0]      # always home minus away
                 pa_started = False
 
             if outs >= 3:
@@ -457,6 +470,14 @@ def _finish(gid, plays, out, finals):
     out["cat_totals"].update(cat_totals)
     out["re_runs"].update(re_runs)
     out["re_n"].update(re_n)
+    for seg, st in seg_rows:
+        fin = after3 if seg == 3 else after5
+        if fin is None:            # game never got past that inning; no outcome
+            continue
+        led = 1 if fin[1] > fin[0] else 0
+        c = out["seg3"] if seg == 3 else out["seg5"]
+        c[st + ("n",)] += 1
+        c[st + ("led",)] += led
 
 
 def main():

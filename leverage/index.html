@@ -13,6 +13,7 @@
     --ink:#e9eef5; --dim:#8296ad; --dimmer:#5b6d84;
     --dirt:#8a5a3b;
     --low:#4a7fb5; --med:#2fa36b; --high:#e0a33a; --max:#e05252;
+    --up:#4ec98a; --down:#e07070;
     --tap:44px;
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
@@ -31,6 +32,17 @@
     padding:12px; margin-bottom:10px}
   .lbl{font-size:10.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--dim)}
 
+  /* ---- metric picker ---- */
+  .metrics{display:grid; grid-template-columns:repeat(4,1fr); gap:5px; margin-top:8px}
+  .metrics button{border:1px solid var(--line); background:var(--panel2); color:var(--dim);
+    border-radius:9px; padding:9px 2px; font-size:11px; font-weight:600; cursor:pointer;
+    letter-spacing:.02em}
+  .metrics button.on{background:#2a3a4c; color:var(--ink); border-color:#3c5164}
+  .metrics button.off{opacity:.4}
+  .mcap{font-size:11.5px; color:var(--dimmer); margin-top:9px; line-height:1.5}
+  .mcap b{color:var(--dim); font-weight:600}
+
+  /* ---- headline ---- */
   .readout{display:grid; grid-template-columns:1fr 1fr; gap:10px}
   .big{background:var(--panel2); border-radius:12px; padding:11px 12px;
     border:1px solid var(--line)}
@@ -41,41 +53,20 @@
   .big .sw{font-size:11px; color:var(--dim); margin-top:5px}
   .bar{height:4px; border-radius:3px; background:#0d1319; margin-top:8px; overflow:hidden}
   .bar i{display:block; height:100%; width:0; border-radius:3px; transition:width .25s}
+  .warn{font-size:11.5px; color:#e0a33a; margin-top:10px; display:none; line-height:1.5}
 
-  .we{display:flex; align-items:center; gap:10px; margin-top:11px;
-    padding-top:11px; border-top:1px solid var(--line)}
-  .weBar{flex:1; height:20px; border-radius:6px; overflow:hidden; display:flex;
-    background:#0d1319; border:1px solid var(--line)}
-  .weBar i{display:block; height:100%; background:linear-gradient(90deg,#2b4a6b,#3f7fbf);
-    transition:width .3s}
-  .weTxt{font-size:10px; color:var(--dimmer); white-space:nowrap; letter-spacing:.08em;
-    line-height:1.35; text-align:center; min-width:62px}
-  .weTxt b{font-size:13px; letter-spacing:0; color:var(--ink)}
-  .fair{font-size:10px; color:var(--dimmer); text-align:center; letter-spacing:.1em;
-    margin-top:5px}
-
-  .srcRow{display:flex; align-items:center; justify-content:space-between; gap:8px;
-    margin-top:10px; padding-top:10px; border-top:1px solid var(--line)}
-  .src{display:flex; background:var(--panel2); border:1px solid var(--line);
-    border-radius:9px; overflow:hidden}
-  .src button{border:0; background:transparent; color:var(--dimmer); height:32px;
-    padding:0 11px; font-size:10.5px; letter-spacing:.08em; text-transform:uppercase;
-    font-weight:600; cursor:pointer}
-  .src button.on{background:#2a3a4c; color:var(--ink)}
-  .prov{font-size:10px; color:var(--dimmer); text-align:right; line-height:1.4}
-
+  /* ---- field / controls ---- */
   .grid{display:grid; grid-template-columns:150px 1fr; gap:12px; align-items:center}
   svg.diamond{width:150px; height:150px; display:block}
   svg.diamond .base{cursor:pointer}
   .col{display:flex; flex-direction:column; gap:12px}
-
   .pips{display:flex; gap:9px; margin-top:6px}
   .pip{width:26px; height:26px; border-radius:50%; border:2px solid var(--line);
-    background:transparent; cursor:pointer; padding:0; transition:background .12s,border-color .12s}
+    background:transparent; cursor:pointer; padding:0;
+    transition:background .12s,border-color .12s}
   .pip.on{background:var(--on,#e0a33a); border-color:var(--on,#e0a33a)}
   .pip.sq{border-radius:6px}
   .row{display:flex; align-items:center; justify-content:space-between; gap:8px}
-
   .step{display:flex; align-items:center; background:var(--panel2);
     border:1px solid var(--line); border-radius:10px; overflow:hidden}
   .step button{width:38px; height:var(--tap); border:0; background:transparent;
@@ -89,6 +80,7 @@
     font-weight:600; cursor:pointer}
   .seg button.on{background:#2a3a4c; color:var(--ink)}
 
+  /* ---- count grid ---- */
   .cgrid{display:grid; grid-template-columns:auto repeat(3,1fr); gap:4px; margin-top:8px}
   .cgrid .h{font-size:10px; color:var(--dimmer); text-align:center; padding:2px 0}
   .cgrid .rh{font-size:10px; color:var(--dimmer); display:flex; align-items:center;
@@ -100,18 +92,21 @@
   .cell .cc{font-size:9.5px; color:var(--dimmer); letter-spacing:.06em}
   .cell.cur{outline:2px solid #6ea8de; outline-offset:-2px}
 
-  table{width:100%; border-collapse:collapse; margin-top:6px}
-  th{font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--dimmer);
-    text-align:right; font-weight:500; padding:3px 0}
-  th:first-child{text-align:left}
-  td{padding:4px 0; font-size:13px; text-align:right; border-top:1px solid #1b2530}
-  td:first-child{text-align:left; color:var(--dim)}
-  td .swg{font-weight:600}
-
-  .presets{display:flex; gap:6px; flex-wrap:wrap; margin-top:8px}
-  .presets button{flex:1 1 auto; border:1px solid var(--line); background:var(--panel2);
-    color:var(--dim); border-radius:9px; padding:9px 8px; font-size:11.5px; cursor:pointer}
-  .presets button:active{background:#22303f}
+  /* ---- outcome list ---- */
+  .ohead{display:flex; justify-content:space-between; align-items:baseline;
+    font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--dimmer);
+    padding:0 2px 6px}
+  .orow{padding:11px 2px 9px; border-top:1px solid #1b2530}
+  .orow:first-child{border-top:0}
+  .otop{display:flex; align-items:baseline; justify-content:space-between; gap:10px}
+  .oname{font-size:16px; color:var(--ink); font-weight:500}
+  .ochance{font-size:11.5px; color:var(--dimmer); margin-left:7px; font-weight:400}
+  .odelta{font-size:21px; font-weight:700; letter-spacing:-.01em; white-space:nowrap}
+  .otrack{position:relative; height:5px; margin-top:8px; border-radius:3px;
+    background:#0d1319; overflow:hidden}
+  .otrack:before{content:""; position:absolute; left:calc(50% - 1px); top:-2px; bottom:-2px;
+    width:2px; background:#3a4b5f; z-index:1}
+  .otrack i{position:absolute; top:0; bottom:0; border-radius:3px; transition:all .22s}
 
   details{margin-top:2px}
   summary{list-style:none; cursor:pointer; font-size:11px; letter-spacing:.14em;
@@ -121,7 +116,6 @@
   details[open] summary:before{content:"▾ "}
   .note{font-size:11.5px; color:var(--dimmer); line-height:1.55}
   .note b{color:var(--dim); font-weight:600}
-  .warn{font-size:11.5px; color:#e0a33a; margin-top:8px; display:none}
 </style>
 </head>
 <body>
@@ -129,9 +123,17 @@
 
   <header>
     <h1>Leverage</h1>
-    <span class="sub">Retrosheet · observed win expectancy</span>
+    <span class="sub">how much this moment can move</span>
   </header>
 
+  <!-- ===== what are we swinging? ===== -->
+  <div class="card">
+    <div class="lbl">Swing what</div>
+    <div class="metrics" id="metrics"></div>
+    <div class="mcap" id="mcap"></div>
+  </div>
+
+  <!-- ===== headline ===== -->
   <div class="card">
     <div class="readout">
       <div class="big">
@@ -149,21 +151,10 @@
         <div class="bar"><i id="liB"></i></div>
       </div>
     </div>
-    <div class="we">
-      <div class="weTxt num" id="weAway">–</div>
-      <div class="weBar"><i id="weB"></i></div>
-      <div class="weTxt num" id="weHome">–</div>
-    </div>
-    <div class="fair num" id="fair"></div>
-    <div class="srcRow">
-      <div class="src" id="src">
-        <button data-s="obs" class="on">Observed</button><button data-s="neu">Even teams</button>
-      </div>
-      <div class="prov num" id="prov"></div>
-    </div>
     <div class="warn" id="warn"></div>
   </div>
 
+  <!-- ===== the game state ===== -->
   <div class="card">
     <div class="grid">
       <svg class="diamond" viewBox="0 0 100 100" aria-label="baserunners">
@@ -213,40 +204,35 @@
         <button id="home-">−</button><span class="val num" id="homeV">0</span><button id="home+">+</button>
       </div>
     </div>
-    <div class="presets">
-      <button data-p="open">First pitch</button>
-      <button data-p="walkoff">Walk-off spot</button>
-      <button data-p="max">Max leverage</button>
-      <button data-p="blowout">Blowout</button>
-    </div>
   </div>
 
+  <!-- ===== outcomes ===== -->
+  <div class="card">
+    <div class="lbl">If this happens</div>
+    <div class="ohead"><span>Outcome · chance</span><span>Swing, batting team</span></div>
+    <div id="outcomes"></div>
+  </div>
+
+  <!-- ===== count map ===== -->
   <div class="card">
     <div class="lbl">Pitch leverage by count · tap to set</div>
     <div class="cgrid" id="cgrid"></div>
   </div>
 
   <div class="card">
-    <div class="lbl">What each outcome does — batting team's side</div>
-    <table id="outcomes">
-      <thead><tr><th>Outcome</th><th>Chance</th><th>Win %</th><th>Swing</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <div class="card">
     <details>
       <summary>How this is computed</summary>
       <p class="note">
-        <b>Leverage Index</b> (Tom Tango, used by FanGraphs) measures how much a moment
-        can move the game: the average win-probability swing you should expect from here,
-        divided by the average swing of a typical plate appearance.
-        <b>1.00 is a perfectly average moment.</b>
+        <b>Leverage Index</b> (Tom Tango, used by FanGraphs) measures how much a moment can
+        move things: the average swing you should expect from here, divided by the average
+        swing of a typical plate appearance. <b>1.00 is a perfectly average moment.</b>
+        Each of the four things you can swing gets its own scale, so 1.00 always means
+        average.
       </p>
       <p class="note">
         <b>This at-bat</b> is leverage over the rest of the plate appearance — at 0-0 that
         is exactly the classic Leverage Index. <b>This pitch</b> is the same idea for the
-        single next pitch, normalised against an average pitch, so 1.00 is again average.
+        single next pitch, measured against an average pitch.
       </p>
       <p class="note" id="prov2"></p>
       <p class="note" id="prov3"></p>
@@ -263,66 +249,80 @@ if(!M){ document.body.innerHTML =
   '<p style="padding:24px;color:#e05252;font:14px system-ui">'+
   'model.js failed to load — it must sit next to index.html.</p>'; return; }
 
-/* ============================ the published tables =========================
-   we0  : observed win expectancy per game state          (NINN,2,3,8,NDIFF)
-   weC  : the same, split by ball-strike count            (NINN,2,3,8,NDIFFC,4,3)
-   we0n : a neutral-teams model of the same thing, for comparison
-   obsN : how many real situations each state was measured from
-   All win probabilities are stored in basis points and are for the HOME team. */
+/* =========================== the shipped tables ============================
+   tab.win : published win expectancy per game state       (NINN,2,3,8,NDIFF)
+   weC     : the same, split by ball-strike count          (NINN,2,3,8,NDIFFC,4,3)
+   tab.f5  : P(home ahead after 5 innings)                 (5,2,3,8,NDIFF)
+   tab.f3  : P(home ahead after 3 innings)                 (3,2,3,8,NDIFF)
+   tab.run : P(batting team scores again this inning)      (3,8)
+   Probabilities are stored in basis points. Nothing here is displayed as a
+   level -- only differences between them are. */
 function u16(s){
   var bin = atob(s), n = bin.length, u8 = new Uint8Array(n);
   for(var i=0;i<n;i++) u8[i] = bin.charCodeAt(i);
   return new Uint16Array(u8.buffer);
 }
-var WE0 = u16(M.we0), WEC = u16(M.weC), WE0N = u16(M.we0n), OBSN = u16(M.obsN);
+var TAB = {win:u16(M.tab.win), f5:u16(M.tab.f5), f3:u16(M.tab.f3)};
+var RUN = M.tab.run, WEC = u16(M.weC);
 var CATS = M.cats, NCAT = CATS.length;
 var DMAX = M.dmax, DMAXC = M.dmaxc, NINN = M.ninn;
 var NDIFF = 2*DMAX+1, NDIFFC = 2*DMAXC+1, NOUTS = 3, NBASE = 8;
 var iK = CATS.indexOf("K"), iBB = CATS.indexOf("BB"), iHB = CATS.indexOf("HBP");
+var MET = M.metrics, mi = 0;
+function metric(){ return MET[mi]; }
 
-var MODE = "obs";                       // "obs" = published table, "neu" = even teams
 function clampD(d){ return d < -DMAX ? -DMAX : (d > DMAX ? DMAX : d); }
 function islot(inn){ return Math.min(inn, NINN) - 1; }
-function i0(inn,half,outs,base,d){
-  return ((((islot(inn)*2 + half)*NOUTS + outs)*NBASE + base))*NDIFF + (d + DMAX);
+function idx5(slot,half,outs,base,d,ndiff){
+  return ((((slot*2 + half)*NOUTS + outs)*NBASE + base))*ndiff + (d + DMAX);
 }
 function iC(inn,half,outs,base,d,b,s){
   return (((((islot(inn)*2 + half)*NOUTS + outs)*NBASE + base))*NDIFFC + (d + DMAXC))*12
          + b*3 + s;
 }
+function inScope(inn){ var n = metric().innMax; return !n || inn <= n; }
 
-/** Observations behind a state in the published table. */
-function observations(inn,half,outs,base,diff){
-  return OBSN[i0(inn,half,outs,base,clampD(diff))] * 4;
+/** The selected metric's probability at a game state (count 0-0). */
+function stateValue(inn,half,outs,base,diff){
+  var k = metric().key, d = clampD(diff);
+  if(k === "run") return RUN[outs*NBASE + base];
+  if(k === "win") return TAB.win[idx5(islot(inn),half,outs,base,d,NDIFF)] / 10000;
+  var n = metric().innMax;
+  if(inn > n) return d > 0 ? 1 : 0;                     // segment already settled
+  return TAB[k][idx5(inn-1,half,outs,base,d,NDIFF)] / 10000;
 }
 
-/** Home-team win expectancy at a state, at count 0-0. */
-function we0(inn,half,outs,base,diff){
-  var a = MODE === "obs" ? WE0 : WE0N;
-  return a[i0(inn,half,outs,base,clampD(diff))] / 10000;
-}
-
-/** Win expectancy after a plate appearance leaving `no` outs, `nb` bases, `runs` in.
+/** Its value after a plate appearance leaving `no` outs, `nb` bases, `runs` in.
  *  The branching is the rules of baseball, not a model. */
 function nextValue(inn,half,diff,nb,no,runs){
-  var sgn = half === 1 ? 1 : -1;
-  var d = clampD(diff + sgn*runs);
-  if(half === 1 && inn >= 9 && d > 0) return 1;            // walk-off
-  if(no < 3) return we0(inn,half,no,nb,d);
-  if(half === 0){
-    if(inn >= 9 && d > 0) return 1;                        // home need not bat
-    if(inn >= 10) return M.extEntry[1*NDIFF + d + DMAX];
-    return we0(inn,1,0,0,d);
+  var k = metric().key, sgn = half === 1 ? 1 : -1, d = clampD(diff + sgn*runs);
+  if(k === "run"){
+    if(runs > 0) return 1;                              // it already happened
+    if(no >= 3) return 0;                               // inning over, it did not
+    return RUN[no*NBASE + nb];
   }
-  if(inn >= 9){
-    if(d > 0) return 1;
-    if(d < 0) return 0;
-    return M.extEntry[0*NDIFF + DMAX];                     // tied, on to extras
+  if(k === "win"){
+    if(half === 1 && inn >= 9 && d > 0) return 1;       // walk-off
+    if(no < 3) return stateValue(inn,half,no,nb,d);
+    if(half === 0){
+      if(inn >= 9 && d > 0) return 1;                   // home need not bat
+      if(inn >= 10) return M.extEntry[1*NDIFF + d + DMAX];
+      return stateValue(inn,1,0,0,d);
+    }
+    if(inn >= 9){
+      if(d > 0) return 1;
+      if(d < 0) return 0;
+      return M.extEntry[0*NDIFF + DMAX];                // tied, on to extras
+    }
+    return stateValue(inn+1,0,0,0,d);
   }
-  return we0(inn+1,0,0,0,d);
+  var n = metric().innMax;                              // "ahead after N innings"
+  if(no < 3) return stateValue(inn,half,no,nb,d);
+  if(half === 0) return stateValue(inn,1,0,0,d);
+  if(inn >= n) return d > 0 ? 1 : 0;
+  return stateValue(inn+1,0,0,0,d);
 }
 
-/** Every reachable post-PA win probability, grouped by outcome. */
 function stateValues(inn,half,outs,base,diff){
   var vals=[], probs=[];
   for(var ci=0; ci<NCAT; ci++){
@@ -341,8 +341,8 @@ var ORDER=[];
 for(var b_=0;b_<4;b_++) for(var s_=0;s_<3;s_++) ORDER.push([b_,s_]);
 ORDER.sort(function(x,y){ return (y[0]+y[1])-(x[0]+x[1]); });
 
-/** Count-level win expectancy by recursion. Used for the even-teams view, and
- *  wherever the published by-count table does not reach (|score| > 8). */
+/** Values at every count, by recursion through the count tree, anchored so 0-0
+ *  matches the state-level number. */
 function countRecursion(sv, anchor0){
   var vcat=[], i;
   for(i=0;i<NCAT;i++) vcat.push(dot(sv.vals[i], sv.probs[i]));
@@ -361,47 +361,48 @@ function countRecursion(sv, anchor0){
   return W;
 }
 
-/** Win expectancy at every count for one state. */
 function countValues(st, sv){
   var d = clampD(st.diff);
-  if(MODE === "obs" && Math.abs(d) <= DMAXC){
-    var W={};
+  if(metric().key === "win" && Math.abs(d) <= DMAXC){
+    var W={};                                  // the published by-count table
     for(var b=0;b<4;b++) for(var s=0;s<3;s++)
       W[b+","+s] = WEC[iC(st.inn,st.half,st.outs,st.base,d,b,s)] / 10000;
     return W;
   }
-  return countRecursion(sv, we0(st.inn,st.half,st.outs,st.base,d));
+  return countRecursion(sv, stateValue(st.inn,st.half,st.outs,st.base,d));
 }
 
 /** Everything the UI needs for one game state and count. */
 function analyze(st){
+  if(!inScope(st.inn))
+    return {li:0, pli:0, paSwing:0, pitSwing:0, rows:[], settled:true};
   var sv = stateValues(st.inn, st.half, st.outs, st.base, st.diff);
   var W  = countValues(st, sv);
-  var w0 = W[st.balls+","+st.strikes];
+  var v0 = W[st.balls+","+st.strikes];
   var pc = M.catAtCount[""+st.balls+st.strikes];
   var m  = M.pitch[""+st.balls+st.strikes];
-  var ci,i,pa=0,pit=0,rows=[];
+  var homeRef = metric().homeRef, ci, pa=0, pit=0, rows=[];
 
   function catSwing(c){
-    var a=0; for(var j=0;j<sv.vals[c].length;j++) a+=sv.probs[c][j]*Math.abs(sv.vals[c][j]-w0);
+    var a=0; for(var j=0;j<sv.vals[c].length;j++) a+=sv.probs[c][j]*Math.abs(sv.vals[c][j]-v0);
     return a;
   }
   for(ci=0; ci<NCAT; ci++){
     pa += pc[ci]*catSwing(ci);
     var ev = dot(sv.vals[ci], sv.probs[ci]);
-    var bat = st.half===1 ? ev : 1-ev, bat0 = st.half===1 ? w0 : 1-w0;
-    rows.push({cat:CATS[ci], p:pc[ci], we:bat, d:bat-bat0});
+    // report from the batting team's side, so a home run is always a plus
+    var d = homeRef ? ((st.half===1 ? ev : 1-ev) - (st.half===1 ? v0 : 1-v0)) : ev - v0;
+    rows.push({cat:CATS[ci], p:pc[ci], d:d});
   }
-  pit += st.balls<3 ? m.ball*Math.abs(W[(st.balls+1)+","+st.strikes]-w0)
+  pit += st.balls<3 ? m.ball*Math.abs(W[(st.balls+1)+","+st.strikes]-v0)
                     : m.ball*catSwing(iBB);
-  pit += st.strikes<2 ? (m.strike+m.foul)*Math.abs(W[st.balls+","+(st.strikes+1)]-w0)
+  pit += st.strikes<2 ? (m.strike+m.foul)*Math.abs(W[st.balls+","+(st.strikes+1)]-v0)
                       : m.strike*catSwing(iK);   // a 2-strike foul changes nothing
   pit += m.hbp*catSwing(iHB);
   for(ci=0; ci<NCAT; ci++) if(m.ip[ci]>0) pit += m.ip[ci]*catSwing(ci);
 
-  var dPA  = MODE==="obs" ? M.meta.denomPA    : M.meta.denomNeutralPA;
-  var dPit = MODE==="obs" ? M.meta.denomPitch : M.meta.denomNeutralPitch;
-  return {we:w0, li:pa/dPA, pli:pit/dPit, paSwing:pa, pitSwing:pit, rows:rows, W:W, sv:sv};
+  return {li:pa/metric().denomPA, pli:pit/metric().denomPitch,
+          paSwing:pa, pitSwing:pit, rows:rows, settled:false};
 }
 
 function countMap(st){
@@ -422,12 +423,13 @@ function band(li){
   if(li>=0.85) return {n:"Medium",    c:"var(--med)"};
   return {n:"Low", c:"var(--low)"};
 }
-function amOdds(p){
-  if(p<=0.0005) return "+99999";
-  if(p>=0.9995) return "-99999";
-  return p>=0.5 ? "−"+Math.round(100*p/(1-p)) : "+"+Math.round(100*(1-p)/p);
-}
 var $=function(id){ return document.getElementById(id); };
+var CAPTION = {
+  win: "the chance of <b>winning the game</b>",
+  f5:  "the chance of <b>being ahead after 5 innings</b>",
+  f3:  "the chance of <b>being ahead after 3 innings</b>",
+  run: "the chance the batting team <b>scores again this inning</b>"
+};
 
 function pips(el,n,cur,set){
   el.innerHTML="";
@@ -449,8 +451,6 @@ function render(){
   $("homeLbl").textContent = S.half===1 ? "Home · batting" : "Home";
   Array.prototype.forEach.call($("half").children,function(b){
     b.classList.toggle("on", +b.dataset.h===S.half); });
-  Array.prototype.forEach.call($("src").children,function(b){
-    b.classList.toggle("on", b.dataset.s===MODE); });
   Array.prototype.forEach.call(document.querySelectorAll("#bases .base rect"),function(r){
     var on = (S.base>>(+r.parentNode.dataset.b))&1;
     r.setAttribute("fill", on?"#f2f5f9":"#0e1620");
@@ -458,38 +458,66 @@ function render(){
     r.setAttribute("stroke-width","1.6");
   });
 
-  var over = (S.half===1 && S.inn>=9 && S.diff>0);
-  $("warn").style.display = over ? "block":"none";
-  if(over) $("warn").textContent =
-    "The home team leads in the bottom of the "+S.inn+"th — this game is already over, "+
-    "so leverage is zero.";
+  // metric picker
+  var mh="";
+  for(var i=0;i<MET.length;i++){
+    var out = MET[i].innMax && S.inn > MET[i].innMax;
+    mh += '<button data-m="'+i+'" class="'+(i===mi?"on ":"")+(out?"off":"")+'">'+
+          MET[i].short+'</button>';
+  }
+  $("metrics").innerHTML=mh;
+  Array.prototype.forEach.call($("metrics").children,function(b){
+    b.onclick=function(){ mi=+b.dataset.m; render(); };
+  });
+  $("mcap").innerHTML = "Leverage below is the swing in " + CAPTION[metric().key] + ".";
 
   var a = analyze(S);
+
+  var msg = "";
+  if(a.settled)
+    msg = "The first "+metric().innMax+" innings are already over — nothing from here "+
+          "can move that, so the leverage is zero.";
+  else if(metric().key==="win" && S.half===1 && S.inn>=9 && S.diff>0)
+    msg = "The home team leads in the bottom of the "+S.inn+"th — this game is already "+
+          "over, so the leverage is zero.";
+  $("warn").style.display = msg ? "block":"none";
+  $("warn").textContent = msg;
+
   function setBig(v,t,s,bar,li,swing,full){
     var bd=band(li);
     $(v).textContent = li<10 ? li.toFixed(2) : li.toFixed(1);
     $(v).style.color = bd.c;
     $(t).textContent = bd.n+" leverage";
     $(t).style.color = bd.c;
-    $(s).textContent = "avg swing "+(swing*100).toFixed(1)+" win%";
+    $(s).textContent = "avg swing "+(swing*100).toFixed(1)+" pts";
     var el=$(bar); el.style.width=Math.min(100,li/full*100)+"%"; el.style.background=bd.c;
   }
   setBig("pliV","pliT","pliS","pliB", a.pli, a.pitSwing, 12);
   setBig("liV","liT","liS","liB",  a.li,  a.paSwing, 8);
 
-  var hw=a.we;
-  $("weB").style.width=(hw*100).toFixed(1)+"%";
-  var hp=(hw*100).toFixed(1);                 // round once so the two sides sum to 100
-  $("weAway").innerHTML = "AWAY<br><b>"+(100-hp).toFixed(1)+"%</b>";
-  $("weHome").innerHTML = "HOME<br><b>"+hp+"%</b>";
-  var fav = hw>=0.5 ? "HOME" : "AWAY", fp = hw>=0.5 ? hw : 1-hw;
-  $("fair").textContent = "fair price  " + fav + "  " + amOdds(fp);
-
-  var n = observations(S.inn,S.half,S.outs,S.base,S.diff);
-  $("prov").innerHTML = MODE==="obs"
-    ? "measured from<br>" + Math.round(n).toLocaleString() + " real situations"
-    : "modelled, two<br>league-average teams";
-
+  // ---- outcomes, biggest mover first
+  var NICE={K:"Strikeout",BB:"Walk",HBP:"Hit by pitch","1B":"Single","2B":"Double",
+            "3B":"Triple",HR:"Home run",OUT:"Out in play",OTHER:"Error / fielder's choice"};
+  var rows=a.rows.filter(function(r){ return r.p>=0.0008; })
+                 .sort(function(x,y){ return Math.abs(y.d)-Math.abs(x.d); });
+  var peak=0;
+  rows.forEach(function(r){ peak=Math.max(peak,Math.abs(r.d)); });
+  peak = peak || 1;
+  var h="";
+  rows.forEach(function(r){
+    var up=r.d>=0, col=up?"var(--up)":"var(--down)";
+    var w=Math.abs(r.d)/peak*50;
+    h+='<div class="orow"><div class="otop">'+
+         '<div class="oname">'+NICE[r.cat]+
+           '<span class="ochance num">'+(r.p*100).toFixed(1)+'%</span></div>'+
+         '<div class="odelta num" style="color:'+col+'">'+(up?"+":"−")+
+           Math.abs(r.d*100).toFixed(1)+'</div>'+
+       '</div><div class="otrack"><i style="background:'+col+';'+
+         (up ? 'left:50%;' : 'right:50%;')+'width:'+w+'%"></i></div></div>';
+  });
+  $("outcomes").innerHTML = h ||
+    '<div class="note" style="padding:10px 2px">Nothing to swing here.</div>';
+  // ---- count map
   var cm=countMap(S), g=$("cgrid"), html='<div class="h"></div>';
   for(var s=0;s<3;s++) html+='<div class="h">'+s+' strike'+(s===1?'':'s')+'</div>';
   for(var b=0;b<4;b++){
@@ -507,22 +535,8 @@ function render(){
     c.onclick=function(){ S.balls=+c.dataset.b; S.strikes=+c.dataset.s; render(); };
   });
 
-  var NICE={K:"Strikeout",BB:"Walk",HBP:"Hit by pitch","1B":"Single","2B":"Double",
-            "3B":"Triple",HR:"Home run",OUT:"Out in play",OTHER:"Error / FC"};
-  var rows=a.rows.slice().sort(function(x,y){ return Math.abs(y.d)-Math.abs(x.d); });
-  var h="";
-  rows.forEach(function(r){
-    if(r.p<0.0008) return;
-    var up=r.d>=0, col=up?"#4ec98a":"#e07070";
-    h+="<tr><td>"+NICE[r.cat]+"</td><td class='num'>"+(r.p*100).toFixed(1)+"%</td>"+
-       "<td class='num'>"+(r.we*100).toFixed(1)+"%</td>"+
-       "<td class='num swg' style='color:"+col+"'>"+(up?"+":"−")+
-       (Math.abs(r.d)*100).toFixed(1)+"</td></tr>";
-  });
-  $("outcomes").querySelector("tbody").innerHTML=h;
-
-  location.replace("#"+[S.inn,S.half,S.outs,S.base,S.balls,S.strikes,S.away,S.home,
-                        MODE==="obs"?0:1].join("."));
+  location.replace("#"+[S.inn,S.half,S.outs,S.base,S.balls,S.strikes,S.away,S.home,mi]
+    .join("."));
 }
 
 /* =============================== wiring =================================== */
@@ -531,8 +545,6 @@ document.querySelectorAll("#bases .base").forEach(function(g){
 });
 $("half").onclick=function(e){
   if(e.target.dataset.h!==undefined){ S.half=+e.target.dataset.h; render(); } };
-$("src").onclick=function(e){
-  if(e.target.dataset.s){ MODE=e.target.dataset.s; render(); } };
 function step(id,get,set,lo,hi){
   $(id+"-").onclick=function(){ set(Math.max(lo,get()-1)); render(); };
   $(id+"+").onclick=function(){ set(Math.min(hi,get()+1)); render(); };
@@ -541,44 +553,34 @@ step("inn", function(){return S.inn;}, function(v){S.inn=v;}, 1, 14);
 step("away",function(){return S.away;},function(v){S.away=v;}, 0, 30);
 step("home",function(){return S.home;},function(v){S.home=v;}, 0, 30);
 
-var PRESETS={
-  open:    {inn:1,half:0,outs:0,base:0,balls:0,strikes:0,away:0,home:0},
-  walkoff: {inn:9,half:1,outs:2,base:3,balls:3,strikes:2,away:4,home:3},
-  max:     {inn:9,half:1,outs:2,base:7,balls:0,strikes:0,away:3,home:2},
-  blowout: {inn:7,half:0,outs:1,base:1,balls:1,strikes:1,away:9,home:1}
-};
-document.querySelectorAll(".presets button").forEach(function(b){
-  b.onclick=function(){ Object.assign(S,PRESETS[b.dataset.p]); render(); };
-});
-
 (function(){
   var p=location.hash.slice(1).split(".").map(Number);
   if(p.length>=8 && p.slice(0,8).every(function(x){ return !isNaN(x); })){
     S.inn=p[0]; S.half=p[1]; S.outs=p[2]; S.base=p[3];
     S.balls=p[4]; S.strikes=p[5]; S.away=p[6]; S.home=p[7];
-    if(p.length>8 && p[8]===1) MODE="neu";
+    if(p.length>8 && p[8]>=0 && p[8]<MET.length) mi=p[8];
   }
 })();
 
 $("prov2").innerHTML =
-  "<b>Win expectancy is not computed here — it is read from a published table.</b> "+
-  "Greg Stoll's Retrosheet win-expectancy data covers <b>"+
-  M.meta.weGames.toLocaleString()+" major-league games</b> and <b>"+
-  M.meta.weSituations.toLocaleString()+" observed situations</b>, including a split by "+
-  "ball-strike count. Rare corners of that table are thin, so each cell is shrunk toward "+
-  "a structural model by its own sample size; weighted by how often states actually come "+
-  "up, what you see is "+Math.round(M.meta.observedShare*100)+"% observed data at the "+
-  "state level and "+Math.round(M.meta.observedShareCount*100)+"% at the count level.";
+  "<b>Win probability is read from a published table, not computed here.</b> Greg Stoll's "+
+  "Retrosheet data covers "+M.meta.weGames.toLocaleString()+" major-league games and "+
+  M.meta.weSituations.toLocaleString()+" observed situations, including a split by "+
+  "ball-strike count. Rare corners are thin, so cells are shrunk toward a structural "+
+  "model by sample size; weighted by how often states come up, the game numbers rest on "+
+  Math.round(M.meta.observedShare*100)+"% observed data.";
 $("prov3").innerHTML =
-  "What each outcome does, and how often it happens, is measured from the <b>2024 season</b> "+
-  "("+M.meta.season2024Games.toLocaleString()+" games, "+
-  M.meta.season2024PA.toLocaleString()+" plate appearances of Retrosheet play-by-play). "+
-  "<b>Even teams</b> swaps the observed table for a two-league-average-teams model. Real "+
-  "win expectancy falls off faster with the score, because clubs that are behind really "+
-  "are more often the weaker club — that lifts early-game leverage and is the difference "+
-  "you see when you flip the switch.";
+  "<b>Ahead after 3 or 5 innings</b> is built by convolving the same source's observed "+
+  "run-per-inning distributions ("+M.meta.reSituations.toLocaleString()+" half-innings), "+
+  "so no win model enters it; <b>scores this inning</b> is read straight off that same "+
+  "matrix. What each outcome does to the bases, and how often each outcome happens, is "+
+  "measured from the 2024 season pitch by pitch ("+
+  M.meta.season2024Games.toLocaleString()+" games, "+
+  M.meta.season2024PA.toLocaleString()+" plate appearances).";
 
-window.__LI = {analyze:analyze, model:M, setMode:function(m){ MODE=m; }};
+window.__LI = {analyze:analyze, model:M, setMetric:function(k){
+  for(var i=0;i<MET.length;i++) if(MET[i].key===k) mi=i;
+}};
 render();
 })();
 </script>
