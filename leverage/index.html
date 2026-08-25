@@ -58,11 +58,20 @@
   svg.diamond .base{cursor:pointer}
   .col{flex:1; display:flex; flex-direction:column; justify-content:space-between}
   .pline{display:flex; align-items:center; gap:8px}
+  .rowbtns{display:flex; gap:6px; height:30px}
+  .modeSeg{display:flex; flex:1; background:var(--panel2); border:1px solid var(--line);
+    border-radius:8px; overflow:hidden}
+  .modeSeg button{flex:1; border:0; background:transparent; color:var(--dimmer);
+    font-size:10px; letter-spacing:.09em; text-transform:uppercase; font-weight:600;
+    cursor:pointer}
+  .modeSeg button.on{background:#2a3a4c; color:var(--ink)}
+  .modeSeg button:active{background:#22303f}
   .clear{border:1px solid var(--line); background:var(--panel2); color:var(--dim);
-    border-radius:8px; height:27px; font-size:10px; letter-spacing:.09em;
-    text-transform:uppercase; font-weight:600; cursor:pointer; width:100%}
+    border-radius:8px; height:100%; font-size:10px; letter-spacing:.09em;
+    text-transform:uppercase; font-weight:600; cursor:pointer; flex:1}
   .clear:active{background:#22303f}
   .clear.off{opacity:.35}
+  .pip.evt.dis{opacity:.22; cursor:default}
   .plbl{font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--dim);
     width:48px; flex:none}
   .pips{display:flex; gap:6px}
@@ -188,7 +197,12 @@
           <div class="pips" id="balls" style="--on:#3f7fbf"></div></div>
         <div class="pline"><span class="plbl">Strikes</span>
           <div class="pips" id="strikes" style="--on:#e0a33a"></div></div>
-        <button class="clear" id="clear">Clear game state</button>
+        <div class="rowbtns">
+          <div class="modeSeg" id="mode">
+            <button data-l="1" class="on">Play</button><button data-l="0">Edit</button>
+          </div>
+          <button class="clear" id="clear">Clear</button>
+        </div>
       </div>
     </div>
     <div class="ctrls">
@@ -416,6 +430,7 @@ function countMap(st){
 /* ================================ state =================================== */
 var FRESH = {inn:1, half:0, outs:0, base:0, balls:0, strikes:0, away:0, home:0};
 var S = Object.assign({}, FRESH);
+var LIVE = true;              // taps advance the game rather than just set it
 Object.defineProperty(S,'diff',{get:function(){ return this.home-this.away; }});
 
 function band(li){
@@ -436,10 +451,11 @@ function pips(el,n,cur,set,endLabel,endTitle){
   el.innerHTML="";
   for(var i=0;i<n;i++)(function(i){
     var b=document.createElement("button"), last=(i===n-1);
-    b.className="pip"+(i<cur?" on":"")+(el.id==="strikes"?" sq":"")+(last?" evt":"");
+    b.className="pip"+(i<cur?" on":"")+(el.id==="strikes"?" sq":"")+
+               (last?" evt"+(LIVE?"":" dis"):"");
     if(last){ b.textContent=endLabel; b.title=endTitle; b.setAttribute("aria-label",endTitle); }
     // tapping the lit pip you are on steps back; anything else steps forward
-    b.onclick=function(){ set(cur===i+1 ? i : i+1); };
+    if(!last || LIVE) b.onclick=function(){ set(cur===i+1 ? i : i+1); };
     el.appendChild(b);
   })(i);
 }
@@ -473,12 +489,25 @@ function walk(){
   S.balls=0; S.strikes=0;
 }
 
-function setBalls(v){   if(v>=4) walk(); else S.balls=v;    render(); }
-function setStrikes(v){ if(v>=3) addOut(); else S.strikes=v; render(); }
+/* In play mode a tap is a pitch and the game follows. In edit mode a tap just
+   sets the number, for punching in a situation you heard about. */
+function setBalls(v){
+  if(!LIVE) S.balls = Math.min(3, v);
+  else if(v >= 4) walk();
+  else S.balls = v;
+  render();
+}
+function setStrikes(v){
+  if(!LIVE) S.strikes = Math.min(2, v);
+  else if(v >= 3) addOut();
+  else S.strikes = v;
+  render();
+}
 function setOuts(v){
-  if(v>=3) endHalf();
-  else if(v>S.outs){ S.outs=v; S.balls=0; S.strikes=0; }   // a new out clears the count
-  else S.outs=v;                                            // stepping back is a correction
+  if(!LIVE) S.outs = Math.min(2, v);
+  else if(v >= 3) endHalf();
+  else if(v > S.outs){ S.outs = v; S.balls = 0; S.strikes = 0; }  // a new out clears the count
+  else S.outs = v;                                                 // stepping back is a correction
   render();
 }
 
@@ -494,6 +523,8 @@ function render(){
     b.classList.toggle("on", +b.dataset.h===S.half); });
   var clean = Object.keys(FRESH).every(function(k){ return S[k]===FRESH[k]; });
   $("clear").classList.toggle("off", clean);
+  Array.prototype.forEach.call($("mode").children,function(b){
+    b.classList.toggle("on", (b.dataset.l==="1")===LIVE); });
   Array.prototype.forEach.call(document.querySelectorAll("#bases .base rect"),function(r){
     var on = (S.base>>(+r.parentNode.dataset.b))&1;
     r.setAttribute("fill", on?"#f2f5f9":"#0e1620");
@@ -575,8 +606,8 @@ function render(){
     c.onclick=function(){ S.balls=+c.dataset.b; S.strikes=+c.dataset.s; render(); };
   });
 
-  location.replace("#"+[S.inn,S.half,S.outs,S.base,S.balls,S.strikes,S.away,S.home,mi]
-    .join("."));
+  location.replace("#"+[S.inn,S.half,S.outs,S.base,S.balls,S.strikes,S.away,S.home,mi,
+    LIVE?1:0].join("."));
 }
 
 /* =============================== wiring =================================== */
@@ -584,6 +615,8 @@ document.querySelectorAll("#bases .base").forEach(function(g){
   g.onclick=function(){ S.base ^= (1<<(+g.dataset.b)); render(); };
 });
 $("clear").onclick=function(){ Object.assign(S, FRESH); render(); };
+$("mode").onclick=function(e){
+  if(e.target.dataset.l!==undefined){ LIVE = e.target.dataset.l==="1"; render(); } };
 $("half").onclick=function(e){
   if(e.target.dataset.h!==undefined){ S.half=+e.target.dataset.h; render(); } };
 function step(id,get,set,lo,hi){
@@ -602,6 +635,7 @@ step("home",function(){return S.home;},function(v){S.home=v;}, 0, 30);
     S.balls=cl(p[4],0,3); S.strikes=cl(p[5],0,2);
     S.away=cl(p[6],0,30); S.home=cl(p[7],0,30);
     if(p.length>8 && p[8]>=0 && p[8]<MET.length) mi=p[8];
+    if(p.length>9) LIVE = p[9]!==0;
   }
 })();
 

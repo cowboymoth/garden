@@ -10,13 +10,19 @@ Live: **<https://cowboymoth.github.io/garden/leverage/>** — or just open
 
 Nothing here shows a probability *level*. Only changes in one.
 
-The count and out pips run the game forward rather than just setting a number.
-The last pip in each row is dashed and ends something: **BB** is ball four, so
-the batter takes first and anyone forced moves up (with the run scoring if the
-bases were loaded); **K** is strike three, so an out goes up and the count
-resets; **3** is the third out, which clears the bases and sends the game to the
-next half-inning. Tapping the lit pip you are on steps back instead, for when
-you mis-tap.
+There are two ways to drive it, switched by the **Play / Edit** toggle.
+
+In **Play**, the count and out pips run the game forward. The last pip in each
+row is dashed and ends something: **BB** is ball four, so the batter takes first
+and anyone forced moves up (with the run scoring if the bases were loaded); **K**
+is strike three, so an out goes up and the count resets; **3** is the third out,
+which clears the bases and sends the game to the next half-inning. Tapping the
+lit pip you are on steps back instead, for when you mis-tap.
+
+In **Edit**, a tap just sets the number and nothing follows from it — for
+punching in a situation you heard about rather than one you are watching. The
+three dashed pips are inert there, since ball four, strike three and the third
+out are events, not states. Neither mode will let you hold an impossible state.
 
 ## Swing what?
 
