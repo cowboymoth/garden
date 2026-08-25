@@ -18,3 +18,16 @@ curl -sSLf -O "$BASE/2024.EBN" &
 wait
 
 echo "got $(ls | wc -l) files, $(grep -h -c '^id,' *.EV? | paste -sd+ | bc) games"
+
+# --- published tables we read rather than derive ourselves -----------------
+# Greg Stoll's Win Expectancy Finder data (github.com/gregstoll/baseballstats),
+# computed from Retrosheet play-by-play across 195,573 games. probs.txt is the
+# balls=0,strikes=0 slice of probswithballsstrikes.txt, so we only need the latter.
+cd ../..
+mkdir -p data/external
+cd data/external
+GS=https://raw.githubusercontent.com/gregstoll/baseballstats/master
+curl -sSLf -o probswithballsstrikes.txt "$GS/probswithballsstrikes.txt"
+curl -sSLf -o runsperinningstats        "$GS/runsperinningstats"
+curl -sSLf -o leverage                  "$GS/statsyears/leverage"
+echo "external tables: $(du -sh . | cut -f1)"
