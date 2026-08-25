@@ -11,6 +11,7 @@ below).
 | Project | What it is | Runs how |
 |---|---|---|
 | [`doodles/`](doodles/) | **Doodle Armature** — a generative sheet of naive ink/pencil drawings. Every part is pinned to an invisible 3D solid and projected, so the whole thing turns. Eight utensils, ordered-rank hatching, quality gates, 30fps animation. | open `doodles/doodles.html` |
+| [`leverage/`](leverage/) | **Leverage** — punch in a game state and see how much it can move: leverage index of the at-bat and of the next pitch, measured against winning the game, leading after 5, leading after 3, or scoring this inning. Published Retrosheet win/run tables, 2024 outcome rates. | open `leverage/index.html` |
 | [`odds-game/`](odds-game/) | A small odds-guessing game. | open `odds-game/index.html` |
 | [`art-auctions/`](art-auctions/) | Auction-lot pricing: estimates P(hammer > strike), calibrated against three 2026 sales. `CALIBRATION.md` documents the method. | `python3 art-auctions/price_lot.py` |
 | [`drake/`](drake/) | Lyric-frequency analysis across a catalogue. | `python3 drake/count_lyrics.py` |
@@ -48,6 +49,7 @@ Everything in here is a static HTML file, so Pages serves it with no build step.
 A minute later:
 
 - `https://cowboymoth.github.io/garden/` — the landing page
+- `https://cowboymoth.github.io/garden/leverage/`
 - `https://cowboymoth.github.io/garden/doodles/doodles.html`
 - `https://cowboymoth.github.io/garden/odds-game/index.html`
 
