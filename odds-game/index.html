@@ -273,28 +273,6 @@
     z-index: 999;
   }
 
-  .mode-row {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 22px;
-  }
-  .mode-btn {
-    flex: 1;
-    padding: 10px 6px;
-    border: 1px solid var(--card-border);
-    border-radius: 12px;
-    background: #0e1420;
-    color: var(--muted);
-    font-size: 12px;
-    font-weight: 700;
-    cursor: pointer;
-  }
-  .mode-btn.active {
-    background: rgba(34,211,165,0.12);
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
   .hidden { display: none !important; }
 
   @keyframes shake {
@@ -320,12 +298,6 @@
 
     <div class="stats-row" id="statsRow"></div>
 
-    <div class="mode-row" id="modeRow">
-      <button class="mode-btn active" id="modeToProb" data-mode="toProb">Odds → %</button>
-      <button class="mode-btn" id="modeToOdds" data-mode="toOdds">% → Odds</button>
-      <button class="mode-btn" id="modeMixed" data-mode="mixed">Mixed 🔀</button>
-    </div>
-
     <details class="howto">
       <summary>How American odds work</summary>
       <p>
@@ -335,10 +307,6 @@
         Implied probability = <code>|odds| / (|odds| + 100)</code>.<br><br>
         Bigger negative number = bigger favorite. Bigger positive number = bigger underdog.
         You won't have time to do this math — the game is here to build the gut feel instead.
-        <br><br>
-        <b>Odds → %</b> shows odds, you guess the probability. <b>% → Odds</b> flips it: you're
-        shown a probability and drag the slider until the live odds readout feels right.
-        <b>Mixed</b> randomizes which direction each question asks.
       </p>
     </details>
 
@@ -354,13 +322,13 @@
     <div class="timer-track"><div class="timer-fill" id="timerFill"></div></div>
 
     <div class="odds-display">
-      <div class="label" id="oddsLabel">Implied win probability of...</div>
+      <div class="label">Implied win probability of...</div>
       <div class="odds-box" id="oddsBox">
         <div class="value" id="oddsValue">+150</div>
       </div>
     </div>
 
-    <div class="guess-readout"><span id="guessValue">50</span><span id="guessSuffix">%</span></div>
+    <div class="guess-readout"><span id="guessValue">50</span>%</div>
 
     <div class="slider-track" id="sliderTrack" tabindex="0" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
       <div class="slider-fill" id="sliderFill"></div>
@@ -435,14 +403,6 @@
     return (odds > 0 ? "+" : "") + odds;
   }
 
-  // Converts an implied probability back to the American odds that produce it —
-  // the inverse of oddsToProb. Used by the "% → Odds" mode's live readout.
-  function probToOdds(prob) {
-    prob = Math.max(0.5, Math.min(99.5, prob)); // avoid divide-by-zero at the extremes
-    if (prob > 50) return -Math.round(prob / (100 - prob) * 100);
-    return Math.round((100 - prob) / prob * 100);
-  }
-
   // Bias toward smaller/common magnitudes by taking the min of two random picks,
   // while still occasionally throwing a big long-shot number in for variety.
   function pickMagnitude() {
@@ -508,15 +468,6 @@
 
   // ---------- Game state ----------
   var game = null;
-  var selectedMode = "toProb"; // "toProb" | "toOdds" | "mixed" — chosen on the start screen
-
-  var modeButtons = Array.prototype.slice.call(document.querySelectorAll(".mode-btn"));
-  modeButtons.forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      selectedMode = btn.getAttribute("data-mode");
-      modeButtons.forEach(function (b) { b.classList.toggle("active", b === btn); });
-    });
-  });
 
   function newGame() {
     game = {
@@ -527,8 +478,6 @@
       bestStreakThisGame: 0,
       totalScore: 0,
       currentGuess: 50,
-      mode: selectedMode,
-      currentMode: selectedMode === "mixed" ? "toProb" : selectedMode, // resolved per-question below
       locked: false,
       deadline: 0,
       remainingAtPause: null,
@@ -552,19 +501,12 @@
   var sliderFill = document.getElementById("sliderFill");
   var sliderThumb = document.getElementById("sliderThumb");
   var guessValueEl = document.getElementById("guessValue");
-  var guessSuffixEl = document.getElementById("guessSuffix");
   var dragging = false;
 
   function setGuess(pct) {
     pct = Math.max(0, Math.min(100, Math.round(pct)));
     game.currentGuess = pct;
-    if (game.currentMode === "toOdds") {
-      guessValueEl.textContent = formatOdds(probToOdds(pct));
-      guessSuffixEl.classList.add("hidden");
-    } else {
-      guessValueEl.textContent = pct;
-      guessSuffixEl.classList.remove("hidden");
-    }
+    guessValueEl.textContent = pct;
     sliderFill.style.width = pct + "%";
     sliderThumb.style.left = "calc(" + pct + "% - 20px)";
     sliderTrack.setAttribute("aria-valuenow", pct);
@@ -628,25 +570,15 @@
   // ---------- Question flow ----------
   var oddsValueEl = document.getElementById("oddsValue");
   var oddsBoxEl = document.getElementById("oddsBox");
-  var oddsLabelEl = document.getElementById("oddsLabel");
   var qProgressEl = document.getElementById("qProgress");
   var streakBadgeEl = document.getElementById("streakBadge");
 
   function showQuestion() {
     game.locked = false;
-    game.currentMode = game.mode === "mixed"
-      ? (Math.random() < 0.5 ? "toProb" : "toOdds")
-      : game.mode;
     setGuess(50);
     var odds = game.odds[game.index];
     var signCls = odds > 0 ? "pos" : "neg";
-    if (game.currentMode === "toOdds") {
-      oddsLabelEl.textContent = "What are the odds for a...";
-      oddsValueEl.textContent = oddsToProb(odds).toFixed(1) + "% chance?";
-    } else {
-      oddsLabelEl.textContent = "Implied win probability of...";
-      oddsValueEl.textContent = formatOdds(odds);
-    }
+    oddsValueEl.textContent = formatOdds(odds);
     oddsValueEl.className = "value " + signCls;
     oddsBoxEl.className = "odds-box " + signCls;
     qProgressEl.textContent = "Question " + (game.index + 1) + "/" + TOTAL_QUESTIONS;
@@ -705,7 +637,7 @@
     game.results.push({
       odds: odds, actual: actual, guess: guess, error: error,
       points: points, accuracyPts: accuracyPts, speedBonus: speedBonus,
-      streakBonus: streakBonus, timeout: isTimeout, mode: game.currentMode
+      streakBonus: streakBonus, timeout: isTimeout
     });
 
     if (isTimeout) {
@@ -736,12 +668,7 @@
     var v = verdictFor(r.error);
     fbVerdict.textContent = r.timeout ? "⏱️ Too slow!" : v.text;
     fbVerdict.className = "verdict " + v.cls;
-    if (r.mode === "toOdds") {
-      fbCompare.innerHTML = "You said <b>" + formatOdds(probToOdds(r.guess)) +
-        "</b> — actual was <b>" + formatOdds(r.odds) + "</b>";
-    } else {
-      fbCompare.innerHTML = "You said <b>" + r.guess + "%</b> — actual was <b>" + r.actual.toFixed(1) + "%</b>";
-    }
+    fbCompare.innerHTML = "You said <b>" + r.guess + "%</b> — actual was <b>" + r.actual.toFixed(1) + "%</b>";
     fbPoints.textContent = "+" + r.points;
     fbBreakdown.textContent = "accuracy " + r.accuracyPts + " · speed +" + r.speedBonus +
       " · streak +" + r.streakBonus;
@@ -792,16 +719,8 @@
 
     var rows = "<tr><th>Odds</th><th>You</th><th>Actual</th><th>Off by</th><th>Speed</th><th>Points</th></tr>";
     game.results.forEach(function (r) {
-      var youCell, actualCell;
-      if (r.mode === "toOdds") {
-        youCell = formatOdds(probToOdds(r.guess));
-        actualCell = formatOdds(r.odds);
-      } else {
-        youCell = r.guess + "%";
-        actualCell = r.actual.toFixed(1) + "%";
-      }
-      rows += "<tr><td class='mono'>" + formatOdds(r.odds) + "</td><td>" + youCell + "</td><td>" +
-        actualCell + "</td><td>" + r.error.toFixed(1) + "%</td><td>+" + r.speedBonus + "</td><td class='pts'>" + r.points + "</td></tr>";
+      rows += "<tr><td class='mono'>" + formatOdds(r.odds) + "</td><td>" + r.guess + "%</td><td>" +
+        r.actual.toFixed(1) + "%</td><td>" + r.error.toFixed(1) + "%</td><td>+" + r.speedBonus + "</td><td class='pts'>" + r.points + "</td></tr>";
     });
     rows += "<tr class='total'><td colspan='5' style='text-align:right;'>Total</td><td class='pts'>" + game.totalScore + "</td></tr>";
     document.getElementById("summaryTable").innerHTML = rows;
