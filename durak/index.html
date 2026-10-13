@@ -1,0 +1,647 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>durak</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Oranienbaum&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; touch-action: none; }
+</style>
+<script src="lib/p5.min.js"></script>
+</head>
+<body>
+<!--
+  durak — the table. Rules live in engine.js, bots in bots.js; this file only
+  draws and takes clicks. Everything is drawn by hand in code: wobbly ink
+  outlines on black, lit by a flickering candle. No image files.
+
+  Run:  cd durak && python3 -m http.server 8000   →   http://localhost:8000
+-->
+<script type="module">
+import * as E from './engine.js';
+import { Bot, BOT_NAMES } from './bots.js';
+
+// ── look ─────────────────────────────────────────────────────────────────────
+const INK = [241, 229, 207];        // warm white: paper by candlelight — the only colour
+const FONT = '"Oranienbaum", "Didot", serif';   // Russian high-contrast serif
+const REF_W = 100, REF_H = 145;     // cards are drawn at this size, then scaled
+const HUMAN = 0;
+
+// ── state ────────────────────────────────────────────────────────────────────
+let p, ctx;                          // p5 instance, raw 2D canvas context
+let screen = 'setup';
+const setup = { players: 4, speed: 'normal', perevodnoy: true, throwIn: true };
+let g = null, bots = [], clock = 0;  // clock = game time in ms (pauses with the tab)
+let holdUntil = null;                // game waits for the deal animation
+const sprites = new Map();           // card → where it's drawn right now
+let dealCursor = 0;                  // staggers cards leaving the deck
+let selected = null;                 // your card waiting for a target (defending)
+let shake = { card: null, at: 0 };   // "can't play that" wiggle
+let floats = [], evIdx = 0, overAt = null;
+let buttons = [], L = {}, flick = 1, now = 0, hoverCard = null;
+
+// ── tiny helpers ─────────────────────────────────────────────────────────────
+const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${Math.max(0, Math.min(1, a * flick))})`;
+const name = q => q === HUMAN ? 'you' : g.names[q];
+function hash(a, b = 0) {           // stable pseudo-random 0..1 from two ints
+  let h = Math.imul(a + 1, 374761393) ^ Math.imul(b + 7, 668265263);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+function shuffle(a) { a = [...a]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+
+// Turn a list of points into a slightly unsteady line, like a pen held by a
+// tired hand. Closed shapes overshoot their start a little instead of meeting
+// it exactly — that's most of the "handmade" feel.
+function inked(pts, seed, amp = 0.9, closed = true) {
+  const path = new Path2D(), N = pts.length;
+  const p1 = hash(seed, 1) * 6.28, p2 = hash(seed, 2) * 6.28;
+  const f1 = 1.5 + hash(seed, 3) * 2, f2 = 4 + hash(seed, 4) * 4;
+  const last = closed ? N + 2 : N - 1;
+  for (let i = 0; i <= last; i++) {
+    const k = i / N;
+    const [x, y] = pts[i % N];
+    const [xa, ya] = pts[closed ? (i - 1 + N) % N : Math.max(i - 1, 0)];
+    const [xb, yb] = pts[closed ? (i + 1) % N : Math.min(i + 1, N - 1)];
+    let nx = ya - yb, ny = xb - xa;
+    const len = Math.hypot(nx, ny) || 1;
+    const w = amp * (0.6 * Math.sin(k * 6.28 * f1 + p1) + 0.4 * Math.sin(k * 6.28 * f2 + p2))
+      + (closed && i > N ? (i - N) * amp * 0.7 : 0);
+    const X = x + nx / len * w, Y = y + ny / len * w;
+    i ? path.lineTo(X, Y) : path.moveTo(X, Y);
+  }
+  return path;
+}
+
+function roundRectPts(w, h, r, step = 3) {
+  const pts = [], x0 = -w / 2, y0 = -h / 2;
+  const seg = (ax, ay, bx, by) => { const n = Math.max(1, Math.round(Math.hypot(bx - ax, by - ay) / step)); for (let i = 0; i < n; i++) pts.push([ax + (bx - ax) * i / n, ay + (by - ay) * i / n]); };
+  const arc = (cx, cy, a0) => { const n = Math.max(2, Math.round(r * 1.57 / step)); for (let i = 0; i < n; i++) { const a = a0 + i / n * Math.PI / 2; pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]); } };
+  seg(x0 + r, y0, x0 + w - r, y0); arc(x0 + w - r, y0 + r, -Math.PI / 2);
+  seg(x0 + w, y0 + r, x0 + w, y0 + h - r); arc(x0 + w - r, y0 + h - r, 0);
+  seg(x0 + w - r, y0 + h, x0 + r, y0 + h); arc(x0 + r, y0 + h - r, Math.PI / 2);
+  seg(x0, y0 + h - r, x0, y0 + r); arc(x0 + r, y0 + r, Math.PI);
+  return pts;
+}
+const circlePts = (cx, cy, rx, ry, n = 40) => Array.from({ length: n }, (_, i) => [cx + rx * Math.cos(i / n * 6.283), cy + ry * Math.sin(i / n * 6.283)]);
+
+// Suit shapes as outlines, about 2 units tall, centred. Each returns a list of loops.
+function heartPts(flip = 1, sc = 1, dy = 0) {
+  return Array.from({ length: 56 }, (_, i) => {
+    const t = i / 56 * 6.283;
+    const x = 16 * Math.sin(t) ** 3, y = -(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t));
+    return [x / 17 * sc, (y / 17 - 0.15) * flip * sc + dy];
+  });
+}
+function suitLoops(s) {
+  if (s === 1) return [heartPts()];
+  if (s === 2) {                                    // diamond, edges bowed in a touch
+    const v = [[0, -1.05], [0.72, 0], [0, 1.05], [-0.72, 0]], pts = [];
+    for (let e = 0; e < 4; e++) {
+      const [ax, ay] = v[e], [bx, by] = v[(e + 1) % 4];
+      for (let i = 0; i < 10; i++) {
+        const t = i / 10, bow = Math.sin(t * Math.PI) * 0.12;
+        const x = ax + (bx - ax) * t, y = ay + (by - ay) * t;
+        pts.push([x * (1 - bow), y * (1 - bow)]);
+      }
+    }
+    return [pts];
+  }
+  const stem = [[0, 0.25], [0.3, 1.0], [-0.3, 1.0]];
+  if (s === 0) return [heartPts(-1, 0.92, -0.12), stem];   // spade = upside-down heart + stem
+  return [circlePts(0, -0.5, 0.36, 0.36, 28), circlePts(-0.44, 0.08, 0.36, 0.36, 28), circlePts(0.44, 0.08, 0.36, 0.36, 28), stem];
+}
+
+// A suit symbol at a given size/position. Hearts and diamonds are left open;
+// spades and clubs are filled with pen hatching — how one-colour printed decks
+// tell red from black.
+function suitArt(s, size, ox, oy, seed, amp) {
+  const loops = suitLoops(s).map(pts => pts.map(([x, y]) => [x * size + ox, y * size + oy]));
+  const a = { lines: loops.map((pts, i) => inked(pts, seed + i * 5, amp)), clip: null, hatch: null };
+  if (!E.RED[s]) {
+    a.clip = new Path2D();
+    for (const pts of loops) { pts.forEach(([x, y], i) => i ? a.clip.lineTo(x, y) : a.clip.moveTo(x, y)); a.clip.closePath(); }
+    a.hatch = new Path2D();
+    const gap = Math.max(1.6, size * 0.16), R = size * 1.3;
+    for (let d = -2 * R, i = 0; d <= 2 * R; d += gap, i++) {
+      const line = [[ox + d - R, oy + R], [ox + d, oy], [ox + d + R, oy - R]];
+      a.hatch.addPath(inked(line, seed + 100 + i, amp * 0.6, false));
+    }
+  }
+  return a;
+}
+function drawSuitArt(a, alpha) {
+  ctx.strokeStyle = rgba(INK, 0.92 * alpha);
+  a.lines.forEach(q => ctx.stroke(q));
+  if (a.hatch) {
+    ctx.save(); ctx.clip(a.clip);
+    ctx.strokeStyle = rgba(INK, 0.6 * alpha); ctx.stroke(a.hatch);
+    ctx.restore();
+  }
+}
+
+// ── card art, built once per card ────────────────────────────────────────────
+const RR = roundRectPts(REF_W, REF_H, 9);
+const CARD_FILL = (() => { const q = new Path2D(); q.roundRect(-REF_W / 2, -REF_H / 2, REF_W, REF_H, 9); return q; })();
+const art = new Map();
+function cardArt(c) {
+  if (art.has(c)) return art.get(c);
+  const s = E.suitOf(c), sd = c * 13;
+  const a = {
+    outline: [inked(RR, sd + 1, 0.8), inked(RR, sd + 2, 1.4)],
+    big: suitArt(s, 21, 0, 6, sd + 3, 0.6),
+    small: suitArt(s, 6.5, -REF_W / 2 + 15, -REF_H / 2 + 41, sd + 40, 0.25),
+    rank: E.rankName(E.rankOf(c)),
+  };
+  art.set(c, a);
+  return a;
+}
+// One shared back. (If backs differed card to card, you could track cards by their backs.)
+const BACK = (() => {
+  const moon = [];
+  for (let i = 0; i <= 24; i++) { const a = Math.PI / 2 + i / 24 * Math.PI; moon.push([13 * Math.cos(a), 13 * Math.sin(a)]); }
+  for (let i = 0; i <= 24; i++) { const a = 1.5 * Math.PI - i / 24 * Math.PI; moon.push([-4 + 7 * Math.cos(a), 13 * Math.sin(a)]); }
+  return {
+    outline: [inked(RR, 9001, 0.8), inked(RR, 9002, 1.4)],
+    inner: inked(roundRectPts(REF_W - 18, REF_H - 18, 5, 4), 9003, 0.7),
+    moon: inked(moon.map(([x, y]) => { const r = -0.5; return [x * Math.cos(r) - y * Math.sin(r) + 2, x * Math.sin(r) + y * Math.cos(r) - 4]; }), 9004, 0.4),
+    stars: [[17, -24, 1.3], [-14, 20, 1], [21, 13, 0.8]],
+  };
+})();
+
+// ── layout (recomputed every frame, so resizing just works) ──────────────────
+function layout() {
+  const W = p.width, H = p.height;
+  const ch = Math.min(H * 0.18, W * 0.2, 175), cw = ch * REF_W / REF_H;
+  const cx = W / 2, cy = H * 0.44;
+  const n = g ? g.n : setup.players;
+  const seats = Array.from({ length: n }, (_, i) => {
+    const a = Math.PI / 2 + i * 2 * Math.PI / n;    // clockwise on screen, starting with you at the bottom
+    return { x: cx + Math.cos(a) * W * 0.41, y: cy + Math.sin(a) * H * 0.34 };
+  });
+  seats[0] = { x: cx, y: H - ch * 0.62 };
+  const side = Math.min(W * 0.24, cw * 3.05);
+  L = { W, H, ch, cw, cx, cy, seats, deck: { x: cx - side, y: cy }, discard: { x: cx + side, y: cy } };
+}
+const anchor = q => q === HUMAN ? { x: L.cx, y: L.seats[0].y - L.ch * 0.66 } : L.seats[q];
+const nameY = q => L.seats[q].y + L.ch * 0.25 + 20;
+
+// ── text & buttons ───────────────────────────────────────────────────────────
+function txt(s, x, y, size, { a = 1, col = INK, align = 'center', weight = 400 } = {}) {
+  ctx.font = `${weight} ${size}px ${FONT}`;
+  ctx.textAlign = align; ctx.textBaseline = 'middle';
+  ctx.fillStyle = rgba(col, a);
+  ctx.fillText(s, x, y);
+  return ctx.measureText(s).width;
+}
+function button(label, x, y, size, onClick, { selected = false, a = 0.62, seed = 0 } = {}) {
+  ctx.font = `400 ${size}px ${FONT}`;
+  const w = ctx.measureText(label).width;
+  const hov = Math.abs(p.mouseX - x) < w / 2 + 10 && Math.abs(p.mouseY - y) < size * 0.7;
+  txt(label, x, y, size, { a: hov || selected ? 1 : a });
+  ctx.lineWidth = 1.1;
+  if (selected) { ctx.strokeStyle = rgba(INK, 0.55); ctx.stroke(inked(circlePts(x, y + 1, w / 2 + 13, size * 0.62, 36), seed + 50, 1.3)); }
+  else if (hov) { ctx.strokeStyle = rgba(INK, 0.45); ctx.stroke(inked([[x - w / 2, y + size * 0.5], [x, y + size * 0.52], [x + w / 2, y + size * 0.48]], seed + 70, 0.8, false)); }
+  buttons.push({ x, y, w: w + 20, h: size * 1.4, onClick });
+  return hov;
+}
+
+// ── setup screen ─────────────────────────────────────────────────────────────
+function drawSetup() {
+  const { cx, H, cw } = L;
+  [-1, 0, 1].forEach(k => drawCard(0, { x: cx + k * cw * 0.34, y: H * 0.25 + Math.abs(k) * 7, rot: k * 0.2, face: 0, s: 0.8, alpha: 1 }));
+  // a label on the left, its choices laid out to the right
+  const row = (label, y, choices, key, seed) => {
+    txt(label, cx - 26, y, 20, { a: 0.5, align: 'right' });
+    let x = cx + 6;
+    choices.forEach(([text, value], i) => {
+      ctx.font = `400 22px ${FONT}`;
+      const w = ctx.measureText(text).width;
+      button(text, x + w / 2, y, 22, () => setup[key] = value, { selected: setup[key] === value, seed: seed + i });
+      x += w + 30;
+    });
+  };
+  row('players', H * 0.48, [2, 3, 4, 5, 6].map(n => [String(n), n]), 'players', 1);
+  row('speed', H * 0.555, [['fast', 'fast'], ['normal', 'normal'], ['slow', 'slow']], 'speed', 10);
+  row('perevodnoy', H * 0.63, [['yes', true], ['no', false]], 'perevodnoy', 20);
+  row('throw in after a take', H * 0.705, [['yes', true], ['no', false]], 'throwIn', 30);
+  button('deal', cx, H * 0.82, 34, startGame, { a: 0.85, seed: 13 });
+}
+
+function startGame() {
+  const names = ['you', ...shuffle(BOT_NAMES).slice(0, setup.players - 1)];
+  clock = 0;
+  g = E.newGame({ names, seed: (Math.random() * 2 ** 32) >>> 0, settings: { throwInOnTake: setup.throwIn, perevodnoy: setup.perevodnoy, speed: setup.speed }, now: 0 });
+  bots = names.map((_, q) => q === HUMAN ? null : new Bot(q));
+  sprites.clear();
+  dealCursor = p.millis() + 300; holdUntil = null;
+  evIdx = 0; floats = []; selected = null; overAt = null;
+  screen = 'game';
+}
+
+// ── the game loop ────────────────────────────────────────────────────────────
+function gameStep(dt) {
+  if (holdUntil == null || now < holdUntil) return;      // let the deal finish first
+  clock += dt;
+  E.tick(g, clock);
+  for (const b of bots) if (b) { const a = b.update(g, clock); if (a) E.apply(g, a, clock); }
+  for (; evIdx < g.events.length; evIdx++) {
+    const e = g.events[evIdx];
+    const word = { pass: 'pass', take: 'take', transfer: 'passed on' }[e.kind];
+    if (word) floats.push({ text: word, ...anchor(e.p), dy: e.p === HUMAN ? -20 : -38, born: now });
+    if (e.kind === 'over') overAt = now;
+  }
+  if (selected != null && !(g.defender === HUMAN && g.phase === 'battle' && g.hands[HUMAN].includes(selected))) selected = null;
+}
+
+// What can you play right now? (null = you have nothing to do, don't dim anything)
+function humanPlayable() {
+  if (g.phase === 'over' || g.isOut[HUMAN]) return null;
+  if (g.defender === HUMAN && g.phase === 'battle' && E.uncovered(g) > 0)
+    return new Set([...g.hands[HUMAN].filter(c => g.table.some(x => x.d == null && E.beats(c, x.a, g.trump))), ...E.transferCards(g, HUMAN)]);
+  if ((g.phase === 'opening' && g.attacker === HUMAN) || E.canAdd(g, HUMAN)) return new Set(E.playableAttacks(g, HUMAN));
+  return null;
+}
+
+// Where every card should be. Sprites then glide there.
+function placeAll() {
+  const { cw, ch, cx, cy } = L;
+  const lay = [];
+  g.discard.forEach((c, i) => lay.push([c, { key: 'discard', x: L.discard.x + (hash(c, 5) - 0.5) * 18, y: L.discard.y + (hash(c, 6) - 0.5) * 18, rot: (hash(c, 7) - 0.5) * 0.9, face: 0, s: 1, z: 100 + i }]));
+
+  const k = g.table.length;
+  const canTarget = selected != null;
+  g.table.forEach((x, i) => {
+    const { x: X, y: Y } = slotXY(i, k);
+    const r = (hash(x.a, 8) - 0.5) * 0.12;
+    const halo = canTarget && x.d == null && E.beats(selected, x.a, g.trump);
+    lay.push([x.a, { key: 'table', x: X, y: Y, rot: r, face: 1, s: 1, z: 300 + 2 * i, halo }]);
+    if (x.d != null) lay.push([x.d, { key: 'table', x: X + cw * 0.17, y: Y + ch * 0.13, rot: r + 0.13 + (hash(x.d, 8) - 0.5) * 0.1, face: 1, s: 1, z: 301 + 2 * i }]);
+  });
+
+  // hands — visited round-robin so cards leave the deck in dealing order
+  const playable = humanPlayable();
+  const mine = [...g.hands[HUMAN]].sort((a, b) => {
+    const sa = E.suitOf(a) === g.trump ? 9 : E.suitOf(a), sb = E.suitOf(b) === g.trump ? 9 : E.suitOf(b);
+    return sa - sb || E.rankOf(a) - E.rankOf(b);
+  });
+  const hk = mine.length;
+  const spacing = hk > 1 ? Math.min(cw * 0.66, (L.W * 0.9 - cw) / (hk - 1)) : 0;
+  const targets = new Map();
+  mine.forEach((c, i) => {
+    const off = i - (hk - 1) / 2;
+    const live = playable == null || playable.has(c);
+    const lift = c === selected ? ch * 0.22 : (c === hoverCard && live && playable) ? ch * 0.1 : 0;
+    targets.set(c, { key: 'hand0', x: cx + off * spacing, y: L.seats[0].y + off * off * 1.2 - lift, rot: off * 0.028, face: 1, s: 1, z: 500 + i, alpha: live ? 1 : 0.36 });
+  });
+  const over = g.phase === 'over';
+  for (let q = 1; q < g.n; q++) {
+    const h = g.hands[q], n = h.length, spread = Math.min(cw * 0.2, cw * 1.5 / Math.max(1, n - 1));
+    h.forEach((c, i) => {
+      const off = i - (n - 1) / 2;
+      targets.set(c, { key: 'hand' + q, x: L.seats[q].x + off * spread, y: L.seats[q].y + off * off * 0.8, rot: off * 0.07, face: over ? 1 : 0, s: 0.5, z: 200 + q * 40 + i });
+    });
+  }
+  const maxLen = Math.max(...g.hands.map(h => h.length));
+  for (let i = 0; i < maxLen; i++) for (let q = 0; q < g.n; q++) { const c = g.hands[q][i]; if (c != null) lay.push([c, targets.get(c)]); }
+
+  // the deck last, so the trump card flips over after the deal
+  for (let i = g.deck.length - 1; i >= 0; i--) {
+    const c = g.deck[i];
+    if (i === 0) lay.push([c, { key: 'trump', x: L.deck.x - cw * 0.62, y: L.deck.y + 2, rot: -Math.PI / 2 + 0.05, face: 1, s: 1, z: 0 }]);
+    else lay.push([c, { key: 'deck', x: L.deck.x - i * 0.22, y: L.deck.y - i * 0.32, rot: (hash(i, 9) - 0.5) * 0.04, face: 0, s: 1, z: 1 + i }]);
+  }
+  for (const [c, t] of lay) place(c, t);
+}
+
+// Where attack i of k sits: one row of up to 3, then two rows.
+function slotXY(i, k) {
+  const col = i % 3, row = Math.floor(i / 3), inRow = row === 0 ? Math.min(k, 3) : k - 3;
+  return {
+    x: L.cx + (col - (inRow - 1) / 2) * L.cw * 1.38,
+    y: k > 3 ? L.cy + (row === 0 ? -1 : 1) * L.ch * 0.62 : L.cy,
+  };
+}
+// The empty slot you click to pass the attack on (perevodnoy).
+function ghostXY() {
+  const k = g.table.length;
+  if (k >= 3) return slotXY(k, k + 1);
+  const last = slotXY(k - 1, k);
+  return { x: last.x + L.cw * 1.38, y: last.y };
+}
+
+function place(c, t) {
+  let sp = sprites.get(c);
+  if (!sp) { sp = { x: L.deck.x, y: L.deck.y, rot: 0, face: 0, s: 1, alpha: 1, key: 'deck', startAt: 0 }; sprites.set(c, sp); }
+  if (sp.key !== t.key) {
+    if (sp.key === 'deck') { dealCursor = Math.max(now, dealCursor) + (holdUntil == null ? 70 : 140); sp.startAt = dealCursor; }
+    sp.key = t.key;
+  }
+  sp.tx = t.x; sp.ty = t.y; sp.trot = t.rot; sp.tface = t.face; sp.ts = t.s; sp.z = t.z;
+  sp.talpha = t.alpha ?? 1; sp.halo = !!t.halo;
+}
+
+function animate(dt) {
+  const a = 1 - Math.exp(-dt / 80), af = 1 - Math.exp(-dt / 110);
+  for (const sp of sprites.values()) {
+    if (now < sp.startAt) { sp.zd = 60; continue; }          // still waiting on the deck
+    sp.x += (sp.tx - sp.x) * a; sp.y += (sp.ty - sp.y) * a;
+    sp.rot += (sp.trot - sp.rot) * a; sp.s += (sp.ts - sp.s) * a;
+    sp.face += (sp.tface - sp.face) * af; sp.alpha += (sp.talpha - sp.alpha) * a;
+    sp.zd = sp.z + (Math.hypot(sp.tx - sp.x, sp.ty - sp.y) > 4 ? 1000 : 0);  // cards in flight on top
+  }
+}
+
+// ── drawing a card ───────────────────────────────────────────────────────────
+function drawCard(c, sp) {
+  const k = L.ch / REF_H * sp.s;
+  const flip = Math.cos(Math.PI * (1 - sp.face));             // 1 = face up, -1 = face down
+  let sx = 0;
+  if (c === shake.card && now - shake.at < 450) { const t = now - shake.at; sx = Math.sin(t / 22) * 7 * Math.exp(-t / 160); }
+  ctx.save();
+  ctx.translate(sp.x + sx, sp.y); ctx.rotate(sp.rot);
+  ctx.scale(k * Math.max(0.03, Math.abs(flip)), k);
+  ctx.fillStyle = '#000'; ctx.fill(CARD_FILL);
+  ctx.lineWidth = 1.15 / k; ctx.lineJoin = ctx.lineCap = 'round';
+  const a = sp.alpha;
+  if (flip >= 0) {
+    const A = cardArt(c), col = INK;
+    if (sp.halo) {
+      ctx.save(); ctx.scale(1.07, 1.05); ctx.lineWidth = 1.6 / k;
+      ctx.strokeStyle = rgba(INK, 0.35 + 0.25 * Math.sin(now / 260)); ctx.stroke(A.outline[1]); ctx.restore();
+    }
+    ctx.strokeStyle = rgba(INK, 0.88 * a); ctx.stroke(A.outline[0]);
+    ctx.strokeStyle = rgba(INK, 0.25 * a); ctx.stroke(A.outline[1]);
+    drawSuitArt(A.big, a); drawSuitArt(A.small, a);
+    ctx.font = `400 26px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = rgba(col, a);
+    ctx.fillText(A.rank, -REF_W / 2 + 15, -REF_H / 2 + 28);
+    ctx.rotate(Math.PI); ctx.fillText(A.rank, -REF_W / 2 + 15, -REF_H / 2 + 28);
+  } else {
+    ctx.strokeStyle = rgba(INK, 0.72 * a); ctx.stroke(BACK.outline[0]);
+    ctx.strokeStyle = rgba(INK, 0.2 * a); ctx.stroke(BACK.outline[1]);
+    ctx.strokeStyle = rgba(INK, 0.22 * a); ctx.stroke(BACK.inner);
+    ctx.strokeStyle = rgba(INK, 0.65 * a); ctx.stroke(BACK.moon);
+    ctx.fillStyle = rgba(INK, 0.5 * a);
+    for (const [x, y, r] of BACK.stars) { ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill(); }
+  }
+  ctx.restore();
+}
+
+// ── table furniture ──────────────────────────────────────────────────────────
+// The countdown: a wick burning down, with a little flame at the end.
+function wick(x, y, len, frac, seed) {
+  frac = Math.max(0, Math.min(1, frac));
+  const x0 = x - len / 2, x1 = x0 + len * frac;
+  const n = Math.max(2, Math.round(len * frac / 3));
+  const pts = Array.from({ length: n }, (_, i) => [x0 + (x1 - x0) * i / (n - 1), y]);
+  ctx.lineWidth = 1.2; ctx.lineCap = 'round';
+  ctx.strokeStyle = rgba(INK, 0.4);
+  ctx.stroke(inked(pts, seed, 0.5, false));
+  const f = 0.85 + 0.15 * Math.sin(now * 0.031) + 0.08 * Math.sin(now * 0.077 + 1);
+  ctx.save();
+  ctx.shadowColor = 'rgba(255,170,100,0.55)'; ctx.shadowBlur = 12;
+  ctx.fillStyle = `rgba(255,${Math.round(196 + 25 * (f - 0.85))},150,0.75)`;
+  ctx.beginPath();
+  ctx.moveTo(x1, y - 10 * f);
+  ctx.quadraticCurveTo(x1 + 4.2, y - 2.5, x1, y + 1.5);
+  ctx.quadraticCurveTo(x1 - 4.2, y - 2.5, x1, y - 10 * f);
+  ctx.fill();
+  ctx.restore();
+}
+
+// A faint curved arrow from the attacker to the defender.
+function roleArrow() {
+  const A = anchor(g.attacker), D = anchor(g.defender);
+  const M = { x: (A.x + D.x) / 2, y: (A.y + D.y) / 2 }, dist = Math.hypot(D.x - A.x, D.y - A.y);
+  // Neighbours: bow gently toward the middle. Across the table: swing wide around it.
+  const C = Math.hypot(M.x - L.cx, M.y - L.cy) > dist * 0.25
+    ? { x: M.x * 0.6 + L.cx * 0.4, y: M.y * 0.6 + L.cy * 0.4 }
+    : { x: M.x - (D.y - A.y) * 0.75, y: M.y + (D.x - A.x) * 0.75 };
+  const q = t => [(1 - t) ** 2 * A.x + 2 * (1 - t) * t * C.x + t * t * D.x, (1 - t) ** 2 * A.y + 2 * (1 - t) * t * C.y + t * t * D.y];
+  const pts = Array.from({ length: 30 }, (_, i) => q(0.2 + 0.6 * i / 29));
+  ctx.lineWidth = 1.4; ctx.lineCap = 'round';
+  ctx.strokeStyle = rgba(INK, 0.32);
+  ctx.stroke(inked(pts, g.bout * 31 + g.defender, 1.2, false));
+  const [ex, ey] = pts[29], [px, py] = pts[26], ang = Math.atan2(ey - py, ex - px);
+  ctx.beginPath();
+  for (const s of [-1, 1]) { ctx.moveTo(ex, ey); ctx.lineTo(ex - 9 * Math.cos(ang + s * 0.45), ey - 9 * Math.sin(ang + s * 0.45)); }
+  ctx.stroke();
+}
+
+let trumpCache = null;
+function trumpArt(x, y, size) {
+  const key = `${g.seed}:${x}:${y}:${size}`;
+  if (trumpCache?.key !== key) trumpCache = { key, art: suitArt(g.trump, size, x, y, 777, 0.4) };
+  return trumpCache.art;
+}
+
+function drawGame(dt) {
+  placeAll();
+  animate(dt);
+  const { cx, cy, ch, cw } = L;
+
+  if (g.phase !== 'over') roleArrow();
+
+  for (const [c, sp] of [...sprites.entries()].sort((a, b) => a[1].zd - b[1].zd)) drawCard(c, sp);
+
+  // trump suit, always spelled out beside the deck (and in its place once it's gone)
+  ctx.lineWidth = 1.2;
+  if (g.deck.length) {
+    txt(String(g.deck.length), L.deck.x, L.deck.y + ch * 0.5 + 22, 16, { a: 0.45 });
+    drawSuitArt(trumpArt(L.deck.x - cw * 0.95, L.deck.y + ch * 0.5 + 22, 11), 0.85);
+  } else drawSuitArt(trumpArt(L.deck.x, L.deck.y, 18), 0.5);
+
+  // names, and what each person is doing right now
+  const roleOf = q => g.phase === 'over' || g.isOut[q] ? null
+    : q === g.defender ? (g.phase === 'taking' ? 'picking up' : g.phase === 'opening' ? 'defends next' : 'defending')
+    : q === g.attacker ? 'attacking' : null;
+  for (let q = 1; q < g.n; q++) {
+    const role = roleOf(q);
+    txt(g.names[q], L.seats[q].x, nameY(q), 21, { a: g.isOut[q] ? 0.22 : role ? 1 : 0.5, weight: role ? 400 : 300 });
+    if (role) txt(role, L.seats[q].x, nameY(q) + 19, 14, { a: 0.6 });
+  }
+  const mine = roleOf(HUMAN);
+  if (mine) txt(mine === 'attacking' ? 'you attack' : mine === 'defending' ? 'you defend' : mine === 'picking up' ? 'you pick up' : 'you defend next',
+    cx, L.seats[0].y - ch * 0.5 - 48, 17, { a: 0.8, weight: 400 });
+
+  // perevodnoy: an empty slot to drop a same-number card into
+  const xfer = E.transferCards(g, HUMAN);
+  if (xfer.length) {
+    const gp = ghostXY(), lit = selected != null && xfer.includes(selected);
+    ctx.save(); ctx.translate(gp.x, gp.y); ctx.scale(L.ch / REF_H, L.ch / REF_H);
+    ctx.setLineDash([5, 6]); ctx.lineWidth = 1.2 * REF_H / L.ch;
+    ctx.strokeStyle = rgba(INK, lit ? 0.75 : 0.35 + 0.1 * Math.sin(now / 300)); ctx.stroke(BACK.outline[0]);
+    ctx.restore();
+    txt('pass on', gp.x, gp.y, 16, { a: lit ? 0.85 : 0.5 });
+  }
+
+  // whose clock is burning
+  if (g.phase !== 'over' && g.deadline != null && holdUntil != null && now >= holdUntil) {
+    const S = g.settings, left = g.deadline - clock;
+    const at = q => q === HUMAN ? [cx, L.seats[0].y - ch * 0.5 - 24, 130] : [L.seats[q].x, nameY(q) + (roleOf(q) ? 36 : 16), 70];
+    let w = null;
+    if (g.phase === 'opening') w = [...at(g.attacker), left / S.openMs];
+    else if (g.phase === 'battle' && E.uncovered(g) > 0) w = [...at(g.defender), left / S.defendMs];
+    else {
+      const below = g.table.length > 3 ? cy + ch * 1.36 : cy + ch * 0.82;
+      w = [cx, below, 90, left / (g.phase === 'taking' ? S.takeMs : S.windowMs)];
+    }
+    wick(w[0], w[1], w[2], w[3], g.bout * 7 + g.phase.length);
+  }
+
+  // your "take"
+  if (g.defender === HUMAN && g.phase === 'battle' && E.uncovered(g) > 0) {
+    const hw = Math.min(L.W * 0.45, (g.hands[HUMAN].length - 1) * cw * 0.33 + cw * 0.5);
+    button('take', Math.min(L.W - 50, cx + hw + 60), L.seats[0].y, 26, humanTake, { a: 0.75, seed: 21 });
+  }
+
+  // little words that drift up and fade: "pass", "take"
+  floats = floats.filter(f => now - f.born < 1700);
+  for (const f of floats) { const t = (now - f.born) / 1700; txt(f.text, f.x, f.y + f.dy - t * 14, 18, { a: 0.8 * (1 - t) }); }
+
+  if (g.phase === 'over' && overAt != null && now - overAt > 1500) drawOver();
+}
+
+function drawOver() {
+  const { cx, H } = L;
+  const t = Math.min(1, (now - overAt - 1500) / 900);
+  ctx.fillStyle = `rgba(0,0,0,${0.72 * t})`; ctx.fillRect(0, 0, L.W, H);
+  const order = g.out.flat();
+  let y = H * 0.3;
+  order.forEach((q, i) => {
+    const w = txt(name(q), cx, y, 22, { a: 0.7 * t });
+    if (i === 0 || g.out[0].includes(q)) star(cx - w / 2 - 16, y, t);
+    y += 32;
+  });
+  y += 22;
+  if (g.fool != null) { txt(name(g.fool), cx, y, 34, { a: t, weight: 400 }); txt('durak', cx, y + 32, 17, { a: 0.55 * t }); }
+  else txt('no durak', cx, y, 24, { a: 0.6 * t });
+  if (t >= 1) {
+    button('again', cx - 62, y + 96, 24, startGame, { seed: 31 });
+    button('table', cx + 62, y + 96, 24, () => { screen = 'setup'; g = null; }, { seed: 32 });
+  }
+}
+
+function star(x, y, a) {
+  const pts = Array.from({ length: 10 }, (_, i) => { const r = i % 2 ? 2.8 : 7, t = -Math.PI / 2 + i * Math.PI / 5; return [x + r * Math.cos(t), y + r * Math.sin(t)]; });
+  ctx.lineWidth = 1; ctx.strokeStyle = rgba(INK, 0.7 * a); ctx.stroke(inked(pts, 404, 0.3));
+}
+
+// ── input ────────────────────────────────────────────────────────────────────
+const inCard = (sp, x, y) => {
+  if (!sp) return false;
+  const dx = x - sp.x, dy = y - sp.y, c = Math.cos(-sp.rot), s = Math.sin(-sp.rot);
+  return Math.abs(dx * c - dy * s) < L.cw * sp.s / 2 && Math.abs(dx * s + dy * c) < L.ch * sp.s / 2;
+};
+function handHit() {
+  const mine = g.hands[HUMAN].map(c => [c, sprites.get(c)]).filter(([, sp]) => sp).sort((a, b) => b[1].z - a[1].z);
+  for (const [c, sp] of mine) if (inCard(sp, p.mouseX, p.mouseY)) return c;
+  return null;
+}
+function tableHit() {
+  for (let i = g.table.length - 1; i >= 0; i--) if (inCard(sprites.get(g.table[i].a), p.mouseX, p.mouseY)) return i;
+  return -1;
+}
+const nope = c => { shake = { card: c, at: now }; };
+function humanTake() { if (g && g.defender === HUMAN) E.apply(g, { type: 'take', p: HUMAN }, clock); }
+
+function onPress() {
+  for (const b of buttons) if (Math.abs(p.mouseX - b.x) < b.w / 2 && Math.abs(p.mouseY - b.y) < b.h / 2) { b.onClick(); return; }
+  if (screen !== 'game' || g.phase === 'over' || holdUntil == null || now < holdUntil) return;
+
+  const xfer = E.transferCards(g, HUMAN);
+  if (xfer.length && inCard({ ...ghostXY(), rot: 0, s: 1 }, p.mouseX, p.mouseY)) {   // the "pass on" slot
+    const val = c => E.rankOf(c) + (E.suitOf(c) === g.trump ? 13 : 0);
+    const card = xfer.includes(selected) ? selected : [...xfer].sort((a, b) => val(a) - val(b))[0];
+    E.apply(g, { type: 'transfer', p: HUMAN, cards: [card] }, clock);
+    selected = null;
+    return;
+  }
+  if (selected != null) {                         // defending: card chosen, now pick which attack
+    const i = tableHit();
+    if (i >= 0) {
+      const r = E.apply(g, { type: 'defend', p: HUMAN, i, card: selected }, clock);
+      if (!r.ok) nope(selected); else selected = null;
+      return;
+    }
+  }
+  const c = handHit();
+  if (c == null) { selected = null; return; }
+  if (g.defender === HUMAN && g.phase === 'battle') {
+    const targets = g.table.map((x, i) => i).filter(i => g.table[i].d == null && E.beats(c, g.table[i].a, g.trump));
+    const canPass = xfer.includes(c);
+    if (canPass && !targets.length) return void E.apply(g, { type: 'transfer', p: HUMAN, cards: [c] }, clock);
+    if (!targets.length) return nope(c);
+    if (targets.length === 1 && !canPass) return void E.apply(g, { type: 'defend', p: HUMAN, i: targets[0], card: c }, clock);
+    selected = selected === c ? null : c;
+    return;
+  }
+  const r = E.apply(g, { type: 'attack', p: HUMAN, cards: [c] }, clock);
+  if (!r.ok) nope(c);
+}
+
+// ── candlelight ──────────────────────────────────────────────────────────────
+function candle() {
+  const t = now;
+  flick = 0.95 + 0.03 * Math.sin(t * 0.0067) + 0.02 * Math.sin(t * 0.0171 + 1.3) + 0.03 * (p.noise(t * 0.0025) - 0.5);
+  const { W, H } = L, R = Math.max(W, H);
+  let gr = ctx.createRadialGradient(W * 0.5, H * 0.66, 0, W * 0.5, H * 0.66, R * 0.75);
+  gr.addColorStop(0, `rgba(255,236,210,${0.06 * flick})`);
+  gr.addColorStop(0.45, `rgba(255,228,200,${0.022 * flick})`);
+  gr.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = gr; ctx.fillRect(0, 0, W, H);
+}
+function vignette() {
+  const { W, H } = L;
+  const gr = ctx.createRadialGradient(W / 2, H * 0.55, Math.min(W, H) * 0.32, W / 2, H * 0.55, Math.max(W, H) * 0.78);
+  gr.addColorStop(0, 'rgba(0,0,0,0)');
+  gr.addColorStop(1, 'rgba(0,0,0,0.8)');
+  ctx.fillStyle = gr; ctx.fillRect(0, 0, W, H);
+}
+
+// ── p5 ───────────────────────────────────────────────────────────────────────
+new p5(sk => {
+  p = sk;
+  p.setup = () => {
+    p.createCanvas(p.windowWidth, p.windowHeight);
+    ctx = p.drawingContext;
+    // dev shortcuts: index.html#deal5 deals straight in; #deal5auto lets a bot play your seat
+    const m = location.hash.match(/^#deal(\d)?(auto)?/);
+    if (m) { setup.players = Number(m[1] ?? 4); startGame(); if (m[2]) bots[HUMAN] = new Bot(HUMAN); }
+    window.durak = { get g() { return g; }, sprites, ghost: () => ghostXY() };                // poke at the game from the console
+  };
+  p.windowResized = () => p.resizeCanvas(p.windowWidth, p.windowHeight);
+  p.draw = () => {
+    const dt = Math.min(p.deltaTime, 100);
+    now = p.millis();
+    buttons = [];
+    layout();
+    p.background(0);
+    candle();
+    if (screen === 'setup') drawSetup();
+    else {
+      gameStep(dt);
+      hoverCard = g.phase === 'over' ? null : handHit();
+      drawGame(dt);
+      if (holdUntil == null) holdUntil = dealCursor + 700;   // first frame queued the deal
+    }
+    vignette();
+    const over = buttons.some(b => Math.abs(p.mouseX - b.x) < b.w / 2 && Math.abs(p.mouseY - b.y) < b.h / 2)
+      || (screen === 'game' && hoverCard != null);
+    p.cursor(over ? 'pointer' : 'default');
+  };
+  p.mousePressed = () => { onPress(); return false; };
+  p.keyPressed = () => {
+    if (screen !== 'game') return;
+    if (p.key === 't' || p.key === ' ') humanTake();
+    if (p.key === 'Escape') selected = null;
+  };
+});
+</script>
+</body>
+</html>

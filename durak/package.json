@@ -1,0 +1,19 @@
+{
+  "name": "durak",
+  "version": "1.0.0",
+  "description": "Durak card game (p5) — npm install only provides reference copies; the page uses lib/",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@types/three": "^0.186.0",
+    "p5": "^2.3.4",
+    "three": "^0.186.1"
+  },
+  "private": true
+}
