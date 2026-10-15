@@ -116,60 +116,146 @@ function suitLoops(s) {
   return [circlePts(0, -0.5, 0.36, 0.36, 28), circlePts(-0.44, 0.08, 0.36, 0.36, 28), circlePts(0.44, 0.08, 0.36, 0.36, 28), stem];
 }
 
-// A suit symbol at a given size/position. Hearts and diamonds are left open;
-// spades and clubs are filled with pen hatching — how one-colour printed decks
-// tell red from black.
-function suitArt(s, size, ox, oy, seed, amp) {
-  const loops = suitLoops(s).map(pts => pts.map(([x, y]) => [x * size + ox, y * size + oy]));
-  const a = { lines: loops.map((pts, i) => inked(pts, seed + i * 5, amp)), clip: null, hatch: null };
-  if (!E.RED[s]) {
-    a.clip = new Path2D();
-    for (const pts of loops) { pts.forEach(([x, y], i) => i ? a.clip.lineTo(x, y) : a.clip.moveTo(x, y)); a.clip.closePath(); }
-    a.hatch = new Path2D();
-    const gap = Math.max(1.6, size * 0.16), R = size * 1.3;
-    for (let d = -2 * R, i = 0; d <= 2 * R; d += gap, i++) {
-      const line = [[ox + d - R, oy + R], [ox + d, oy], [ox + d + R, oy - R]];
-      a.hatch.addPath(inked(line, seed + 100 + i, amp * 0.6, false));
-    }
-  }
+// A suit symbol at a given size/position (rot = π turns it upside down, like
+// the lower pips on a real card). Black suits are solid ink; red suits are an
+// engraved outline with a faint inner contour — two "inks" from one colour.
+function suitArt(s, size, ox, oy, seed, amp, rot = 0) {
+  const c = Math.cos(rot), sn = Math.sin(rot);
+  const tf = k => ([x, y]) => [(x * c - y * sn) * size * k + ox, (x * sn + y * c) * size * k + oy];
+  const loops = suitLoops(s);
+  const a = { lines: loops.map((pts, i) => inked(pts.map(tf(1)), seed + i * 5, amp)), fills: null, inner: null };
+  if (E.RED[s]) a.inner = inked(loops[0].map(tf(0.62)), seed + 50, amp * 0.5);
+  else a.fills = loops.map((pts, i) => inked(pts.map(tf(1)), seed + i * 5, amp));
   return a;
 }
 function drawSuitArt(a, alpha) {
+  if (a.fills) { ctx.fillStyle = rgba(INK, 0.9 * alpha); a.fills.forEach(q => ctx.fill(q)); }
   ctx.strokeStyle = rgba(INK, 0.92 * alpha);
   a.lines.forEach(q => ctx.stroke(q));
-  if (a.hatch) {
-    ctx.save(); ctx.clip(a.clip);
-    ctx.strokeStyle = rgba(INK, 0.6 * alpha); ctx.stroke(a.hatch);
-    ctx.restore();
-  }
+  if (a.inner) { ctx.strokeStyle = rgba(INK, 0.38 * alpha); ctx.stroke(a.inner); }
 }
 
-// ── card art, built once per card ────────────────────────────────────────────
+// ── card art ─────────────────────────────────────────────────────────────────
 const RR = roundRectPts(REF_W, REF_H, 9);
 const CARD_FILL = (() => { const q = new Path2D(); q.roundRect(-REF_W / 2, -REF_H / 2, REF_W, REF_H, 9); return q; })();
+const FX = 30, FY = 62;                       // the printed frame inside each face
+const IDX_X = -40.5, IDX_Y = -56;             // corner index (rank), outside the frame
+
+// Classic pip positions, top half upright and bottom half upside down.
+const PIPS = {
+  2: [[0, -40], [0, 40]],
+  3: [[0, -40], [0, 0], [0, 40]],
+  4: [[-15, -40], [15, -40], [-15, 40], [15, 40]],
+  5: [[-15, -40], [15, -40], [0, 0], [-15, 40], [15, 40]],
+  6: [[-15, -40], [15, -40], [-15, 0], [15, 0], [-15, 40], [15, 40]],
+  7: [[-15, -40], [15, -40], [0, -20], [-15, 0], [15, 0], [-15, 40], [15, 40]],
+  8: [[-15, -40], [15, -40], [0, -20], [-15, 0], [15, 0], [0, 20], [-15, 40], [15, 40]],
+  9: [[-15, -42], [15, -42], [-15, -14], [15, -14], [0, 0], [-15, 14], [15, 14], [-15, 42], [15, 42]],
+  10: [[-15, -42], [15, -42], [0, -28], [-15, -14], [15, -14], [-15, 14], [15, 14], [0, 28], [-15, 42], [15, 42]],
+};
+
+function spiral(cx, cy, r0, turns, th0, dir, n = 26) {
+  return Array.from({ length: n }, (_, i) => {
+    const t = i / (n - 1) * turns * 2 * Math.PI, r = r0 * (1 - 0.78 * i / (n - 1));
+    return [cx + r * Math.cos(th0 + dir * t), cy + r * Math.sin(th0 + dir * t)];
+  });
+}
+function petal(bx, by, len, ang, n = 22) {           // a teardrop from (bx,by) pointing along ang
+  const side = sgn => Array.from({ length: n }, (_, i) => {
+    const u = sgn > 0 ? i / (n - 1) : 1 - i / (n - 1);
+    const half = len * 0.3 * Math.sin(Math.PI * u) * (1 - 0.45 * u) * sgn;
+    const al = len * u;
+    return [bx + al * Math.cos(ang) - half * Math.sin(ang), by + al * Math.sin(ang) + half * Math.cos(ang)];
+  });
+  return [...side(1), ...side(-1)];
+}
+const join = paths => { const q = new Path2D(); paths.forEach(x => q.addPath(x)); return q; };
+
+// The printed frame every face shares: double rule, corner scrolls, little lozenges.
+const FRAME = (() => {
+  const curls = [];
+  for (const sx of [-1, 1]) for (const sy of [-1, 1])
+    curls.push(inked(spiral(sx * (FX - 5.5), sy * (FY - 5.5), 4.4, 0.85, Math.atan2(sy, sx), sx * sy), 8100 + sx * 3 + sy, 0.15, false));
+  const loz = [];
+  for (const sy of [-1, 1]) loz.push(inked([[0, sy * FY - 4], [2.6, sy * FY], [0, sy * FY + 4], [-2.6, sy * FY]], 8200 + sy, 0.1));
+  return {
+    outer: inked(roundRectPts(2 * FX, 2 * FY, 3, 3), 8001, 0.55),
+    inner: inked(roundRectPts(2 * FX - 6, 2 * FY - 6, 2, 3), 8002, 0.45),
+    curls: join(curls), loz,
+    dots: [[-FX, 0], [FX, 0], [-6.5, -FY], [6.5, -FY], [-6.5, FY], [6.5, FY]],
+  };
+})();
+
+// Crowns for K and Q, a three-petal fleuron for J (centred on 0,0).
+function courtMark(r) {
+  if (r === 13) return { lines: [inked([[-9, 4], [-9, -5], [-4.5, 0], [0, -8], [4.5, 0], [9, -5], [9, 4]], 8301, 0.25),
+    inked([[-9, 1.2], [9, 1.2]], 8302, 0.2, false)], dots: [[-9, -6.8, 1.3], [0, -9.8, 1.4], [9, -6.8, 1.3]] };
+  if (r === 12) {
+    const pts = [[-8, 4], [-8, -3]];
+    for (let b = 0; b < 3; b++) { const cx = -8 + 2.667 + b * 5.333; for (let i = 0; i <= 8; i++) { const t = Math.PI + i / 8 * Math.PI; pts.push([cx + 2.667 * Math.cos(t), -3 + 2.667 * Math.sin(t)]); } }
+    pts.push([8, -3], [8, 4]);
+    return { lines: [inked(pts, 8311, 0.2)], dots: [[-5.33, -7.6, 1], [0, -7.6, 1], [5.33, -7.6, 1]] };
+  }
+  return { lines: [inked(petal(0, 3, 11, -Math.PI / 2), 8321, 0.2), inked(petal(0, 3, 8, -Math.PI / 2 - 0.95), 8322, 0.2),
+    inked(petal(0, 3, 8, -Math.PI / 2 + 0.95), 8323, 0.2), inked([[0, 3], [0, 7]], 8324, 0.15, false)], dots: [[0, 3, 1.2]] };
+}
+
 const art = new Map();
 function cardArt(c) {
   if (art.has(c)) return art.get(c);
-  const s = E.suitOf(c), sd = c * 13;
+  const s = E.suitOf(c), r = E.rankOf(c), sd = c * 13;
   const a = {
     outline: [inked(RR, sd + 1, 0.8), inked(RR, sd + 2, 1.4)],
-    big: suitArt(s, 21, 0, 6, sd + 3, 0.6),
-    small: suitArt(s, 6.5, -REF_W / 2 + 15, -REF_H / 2 + 41, sd + 40, 0.25),
-    rank: E.rankName(E.rankOf(c)),
+    small: suitArt(s, 5.5, IDX_X, IDX_Y + 14, sd + 40, 0.15),
+    rank: E.rankName(r), pips: [], ring: null, court: null,
   };
+  if (r <= 10) {
+    const size = r >= 9 ? 7.2 : 8.2;
+    a.pips = PIPS[r].map(([x, y], i) => suitArt(s, size, x, y, sd + 100 + i * 17, 0.22, y > 0 ? Math.PI : 0));
+  } else if (r === 14) {                     // ace: the suit in a ringed medallion with rays
+    a.pips = [suitArt(s, 13, 0, 0, sd + 100, 0.35)];
+    const rays = new Path2D();
+    for (let i = 0; i < 36; i++) {
+      const t = i / 36 * 2 * Math.PI, r2 = i % 2 ? 24.5 : 26.5;
+      rays.addPath(inked([[22.5 * Math.cos(t), 22.5 * Math.sin(t)], [r2 * Math.cos(t), r2 * Math.sin(t)]], sd + 300 + i, 0.1, false));
+    }
+    a.ring = { rings: [inked(circlePts(0, 0, 19, 19, 48), sd + 201, 0.35), inked(circlePts(0, 0, 21, 21, 48), sd + 202, 0.3)], rays,
+      dots: s === 0 ? Array.from({ length: 16 }, (_, i) => [16 * Math.cos(i / 16 * 6.283), 16 * Math.sin(i / 16 * 6.283)]) : [] };
+  } else {                                   // court: a cartouche with the letter, crowned
+    const m = courtMark(r);
+    a.court = { ovals: [inked(circlePts(0, 0, 21, 33, 56), sd + 401, 0.4), inked(circlePts(0, 0, 18.5, 30.5, 56), sd + 402, 0.35)],
+      mark: m, pips: [suitArt(s, 5.5, 0, -46, sd + 403, 0.15), suitArt(s, 5.5, 0, 46, sd + 404, 0.15, Math.PI)] };
+  }
   art.set(c, a);
   return a;
 }
+
 // One shared back. (If backs differed card to card, you could track cards by their backs.)
 const BACK = (() => {
   const moon = [];
-  for (let i = 0; i <= 24; i++) { const a = Math.PI / 2 + i / 24 * Math.PI; moon.push([13 * Math.cos(a), 13 * Math.sin(a)]); }
-  for (let i = 0; i <= 24; i++) { const a = 1.5 * Math.PI - i / 24 * Math.PI; moon.push([-4 + 7 * Math.cos(a), 13 * Math.sin(a)]); }
+  for (let i = 0; i <= 24; i++) { const a = Math.PI / 2 + i / 24 * Math.PI; moon.push([10 * Math.cos(a), 10 * Math.sin(a)]); }
+  for (let i = 0; i <= 24; i++) { const a = 1.5 * Math.PI - i / 24 * Math.PI; moon.push([-3 + 5.4 * Math.cos(a), 10 * Math.sin(a)]); }
+  // diagonal lattice, clipped by hand to the inner panel
+  const X0 = -37, X1 = 37, Y0 = -59, Y1 = 59, lattice = new Path2D();
+  for (let d = -110, i = 0; d <= 110; d += 9, i++) {
+    for (const dir of [1, -1]) {             // y = dir·x + d
+      const xa = Math.max(X0, dir > 0 ? Y0 - d : d - Y1), xb = Math.min(X1, dir > 0 ? Y1 - d : d - Y0);
+      if (xb - xa < 2) continue;
+      lattice.addPath(inked([[xa, dir * xa + d], [(xa + xb) / 2, dir * (xa + xb) / 2 + d], [xb, dir * xb + d]], 9100 + i * 2 + (dir > 0), 0.25, false));
+    }
+  }
+  const corners = [];
+  for (const sx of [-1, 1]) for (const sy of [-1, 1])
+    corners.push(inked(Array.from({ length: 12 }, (_, i) => { const t = i / 11 * Math.PI / 2; return [sx * (X1 - 8 * Math.cos(t)) , sy * (Y1 - 8 * Math.sin(t))]; }).map(([x, y]) => [x, y]), 9300 + sx * 3 + sy, 0.15, false));
+  const disc = new Path2D(); disc.arc(0, 0, 21, 0, 6.283);
   return {
     outline: [inked(RR, 9001, 0.8), inked(RR, 9002, 1.4)],
-    inner: inked(roundRectPts(REF_W - 18, REF_H - 18, 5, 4), 9003, 0.7),
-    moon: inked(moon.map(([x, y]) => { const r = -0.5; return [x * Math.cos(r) - y * Math.sin(r) + 2, x * Math.sin(r) + y * Math.cos(r) - 4]; }), 9004, 0.4),
-    stars: [[17, -24, 1.3], [-14, 20, 1], [21, 13, 0.8]],
+    inner: inked(roundRectPts(REF_W - 16, REF_H - 16, 5, 4), 9003, 0.6),
+    inner2: inked(roundRectPts(REF_W - 22, REF_H - 22, 4, 4), 9005, 0.5),
+    lattice, corners: join(corners), disc,
+    rings: [inked(circlePts(0, 0, 21, 21, 48), 9006, 0.35), inked(circlePts(0, 0, 18, 18, 48), 9007, 0.3)],
+    moon: inked(moon.map(([x, y]) => { const r = -0.5; return [x * Math.cos(r) - y * Math.sin(r) + 1.5, x * Math.sin(r) + y * Math.cos(r) - 1]; }), 9004, 0.3),
+    stars: [[8, -9, 1], [-9, 8, 0.8], [10, 6, 0.7]],
   };
 })();
 
@@ -369,24 +455,60 @@ function drawCard(c, sp) {
   ctx.lineWidth = 1.15 / k; ctx.lineJoin = ctx.lineCap = 'round';
   const a = sp.alpha;
   if (flip >= 0) {
-    const A = cardArt(c), col = INK;
+    const A = cardArt(c);
     if (sp.halo) {
       ctx.save(); ctx.scale(1.07, 1.05); ctx.lineWidth = 1.6 / k;
       ctx.strokeStyle = rgba(INK, 0.35 + 0.25 * Math.sin(now / 260)); ctx.stroke(A.outline[1]); ctx.restore();
     }
     ctx.strokeStyle = rgba(INK, 0.88 * a); ctx.stroke(A.outline[0]);
     ctx.strokeStyle = rgba(INK, 0.25 * a); ctx.stroke(A.outline[1]);
-    drawSuitArt(A.big, a); drawSuitArt(A.small, a);
-    ctx.font = `400 26px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-    ctx.fillStyle = rgba(col, a);
-    ctx.fillText(A.rank, -REF_W / 2 + 15, -REF_H / 2 + 28);
-    ctx.rotate(Math.PI); ctx.fillText(A.rank, -REF_W / 2 + 15, -REF_H / 2 + 28);
+    // the printed frame
+    ctx.strokeStyle = rgba(INK, 0.5 * a); ctx.stroke(FRAME.outer);
+    ctx.strokeStyle = rgba(INK, 0.2 * a); ctx.stroke(FRAME.inner);
+    ctx.strokeStyle = rgba(INK, 0.55 * a); ctx.stroke(FRAME.curls);
+    for (const q of FRAME.loz) { ctx.fillStyle = '#000'; ctx.fill(q); ctx.strokeStyle = rgba(INK, 0.7 * a); ctx.stroke(q); }
+    ctx.fillStyle = rgba(INK, 0.6 * a);
+    for (const [x, y] of FRAME.dots) { ctx.beginPath(); ctx.arc(x, y, 1.1, 0, 6.283); ctx.fill(); }
+    // the middle: pips, an ace medallion, or a court cartouche
+    if (A.ring) {
+      ctx.strokeStyle = rgba(INK, 0.55 * a); A.ring.rings.forEach(q => ctx.stroke(q));
+      ctx.strokeStyle = rgba(INK, 0.4 * a); ctx.stroke(A.ring.rays);
+      ctx.fillStyle = rgba(INK, 0.5 * a);
+      for (const [x, y] of A.ring.dots) { ctx.beginPath(); ctx.arc(x, y, 0.7, 0, 6.283); ctx.fill(); }
+    }
+    A.pips.forEach(q => drawSuitArt(q, a));
+    if (A.court) {
+      const C = A.court;
+      ctx.strokeStyle = rgba(INK, 0.6 * a); ctx.stroke(C.ovals[0]);
+      ctx.strokeStyle = rgba(INK, 0.25 * a); ctx.stroke(C.ovals[1]);
+      ctx.save(); ctx.translate(0, -15);
+      ctx.strokeStyle = rgba(INK, 0.85 * a); C.mark.lines.forEach(q => ctx.stroke(q));
+      ctx.fillStyle = rgba(INK, 0.85 * a);
+      for (const [x, y, r] of C.mark.dots) { ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill(); }
+      ctx.restore();
+      C.pips.forEach(q => drawSuitArt(q, a));
+      ctx.font = `400 34px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = rgba(INK, a); ctx.fillText(A.rank, 0, 10);
+    }
+    // corner indices, top-left and (turned) bottom-right
+    ctx.font = `400 19px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (let i = 0; i < 2; i++) {
+      if (i) ctx.rotate(Math.PI);
+      ctx.fillStyle = rgba(INK, a); ctx.fillText(A.rank, IDX_X, IDX_Y);
+      drawSuitArt(A.small, a);
+    }
   } else {
     ctx.strokeStyle = rgba(INK, 0.72 * a); ctx.stroke(BACK.outline[0]);
     ctx.strokeStyle = rgba(INK, 0.2 * a); ctx.stroke(BACK.outline[1]);
-    ctx.strokeStyle = rgba(INK, 0.22 * a); ctx.stroke(BACK.inner);
-    ctx.strokeStyle = rgba(INK, 0.65 * a); ctx.stroke(BACK.moon);
-    ctx.fillStyle = rgba(INK, 0.5 * a);
+    ctx.strokeStyle = rgba(INK, 0.4 * a); ctx.stroke(BACK.inner);
+    ctx.strokeStyle = rgba(INK, 0.18 * a); ctx.stroke(BACK.inner2);
+    ctx.strokeStyle = rgba(INK, 0.15 * a); ctx.stroke(BACK.lattice);
+    ctx.strokeStyle = rgba(INK, 0.4 * a); ctx.stroke(BACK.corners);
+    ctx.fillStyle = '#000'; ctx.fill(BACK.disc);
+    ctx.strokeStyle = rgba(INK, 0.55 * a); ctx.stroke(BACK.rings[0]);
+    ctx.strokeStyle = rgba(INK, 0.25 * a); ctx.stroke(BACK.rings[1]);
+    ctx.strokeStyle = rgba(INK, 0.7 * a); ctx.stroke(BACK.moon);
+    ctx.fillStyle = rgba(INK, 0.55 * a);
     for (const [x, y, r] of BACK.stars) { ctx.beginPath(); ctx.arc(x, y, r, 0, 6.283); ctx.fill(); }
   }
   ctx.restore();
@@ -499,6 +621,11 @@ function drawGame(dt) {
     const hw = Math.min(L.W * 0.45, (g.hands[HUMAN].length - 1) * cw * 0.33 + cw * 0.5);
     button('take', Math.min(L.W - 50, cx + hw + 60), L.seats[0].y, 26, humanTake, { a: 0.75, seed: 21 });
   }
+  // your "pass": once every bot has added what it wants, close the window now
+  if (humanCanPass()) {
+    const hw = Math.min(L.W * 0.45, (g.hands[HUMAN].length - 1) * cw * 0.33 + cw * 0.5);
+    button('pass', Math.min(L.W - 50, cx + hw + 60), L.seats[0].y, 26, humanPass, { a: 0.75, seed: 22 });
+  }
 
   // little words that drift up and fade: "pass", "take"
   floats = floats.filter(f => now - f.born < 1700);
@@ -549,6 +676,9 @@ function tableHit() {
 }
 const nope = c => { shake = { card: c, at: now }; };
 function humanTake() { if (g && g.defender === HUMAN) E.apply(g, { type: 'take', p: HUMAN }, clock); }
+const humanCanPass = () => g && g.phase !== 'over' && !g.isOut[HUMAN] && g.defender !== HUMAN && g.hands[HUMAN].length > 0
+  && E.windowOpen(g) && !g.passed.includes(HUMAN) && E.othersPassed(g, HUMAN);
+function humanPass() { if (humanCanPass()) E.apply(g, { type: 'pass', p: HUMAN }, clock); }
 
 function onPress() {
   for (const b of buttons) if (Math.abs(p.mouseX - b.x) < b.w / 2 && Math.abs(p.mouseY - b.y) < b.h / 2) { b.onClick(); return; }
@@ -638,7 +768,9 @@ new p5(sk => {
   p.mousePressed = () => { onPress(); return false; };
   p.keyPressed = () => {
     if (screen !== 'game') return;
-    if (p.key === 't' || p.key === ' ') humanTake();
+    if (p.key === 't') humanTake();
+    if (p.key === 'p') humanPass();
+    if (p.key === ' ') { if (humanCanPass()) humanPass(); else humanTake(); }
     if (p.key === 'Escape') selected = null;
   };
 });

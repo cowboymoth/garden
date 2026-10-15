@@ -19,7 +19,8 @@ node sim.js                                   →  10,000 bot games, every rule 
 **Playing:** click a card to attack or throw it in. When defending, click a card and it covers the attack
 it beats (if it could beat several, click the card, then the attack). `take` (or T / space) picks
 up. With **perevodnoy** on, a card matching the attack's number can be passed on: click it, or click
-the dashed "pass on" slot. The wick is the clock — at *fast*: 15 s to open, 8 s to defend, 3 s for last
+the dashed "pass on" slot. Passing on only changes who defends; turns still go round from whoever
+opened the attack. When every bot is done throwing in, `pass` (or P / space) closes the window early. The wick is the clock — at *fast*: 15 s to open, 8 s to defend, 3 s for last
 throw-ins; *normal* doubles that, *slow* is 5× (bots keep the normal pace).
 
 **Dev shortcuts:** `index.html#deal5` skips setup with 5 players; `#deal5auto` also lets a bot play your
