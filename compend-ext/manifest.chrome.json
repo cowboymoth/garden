@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "compend for Wikipedia",
+  "version": "0.1.0",
+  "description": "Log a compend review straight from the Wikipedia article you're reading.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "minimum_chrome_version": "116",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["storage", "declarativeNetRequestWithHostAccess"],
+  "host_permissions": ["https://compend.org/*", "https://*.wikipedia.org/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://*.wikipedia.org/wiki/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Log this on compend",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/logo-light.png", "icons/logo-dark.png"],
+      "matches": ["https://*.wikipedia.org/*"]
+    }
+  ]
+}
